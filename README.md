@@ -1,148 +1,117 @@
-# Labs Drafts
+# drafts
 
-**Personal staging pipe between AI chats and the public web.**
+**Build and publish, just by talking.**
 
-One URL. Talk to Claude. It writes the code, commits it, publishes it, verifies the result, hands you the URL. No dashboards. No deploy steps. No terminal.
+Drafts turns any Claude conversation into a workspace where you ship real websites, progressive web apps, and AI tools. No registration. No coding. No vibe coding. Just vibe.
 
-```
-chat  →  drafts  →  live
-```
-
-— v0.2 · live on `beta.labs.vc`
+Live at **[beta.labs.vc](https://beta.labs.vc/drafts/)**.
 
 ---
 
-## What is it
+## What it is
 
-Labs Drafts is a small server that accepts file uploads from a Claude chat, versions every save with git, and publishes on command to a public URL. You talk to Claude. Claude talks to Drafts. Your page appears online.
+A lightweight server that sits between Claude and the public web. You get a personal link. You drop it into the Claude for Chrome extension sidebar. Claude reads the page, parses embedded machine-readable instructions, takes on the right level of access automatically, and is ready to build.
 
-Built for one person. Designed so the LLM is the primary user and the human supervises through conversation.
+Then you talk.
 
-Read the full overview: [docs/overview-v0.2.md](docs/overview-v0.2.md).
+> "Make me a landing page for a running club."
+> "Add a signup form."
+> "Make the header feel more like Apple."
+> "Publish."
 
-## What works today (v0.2)
+Minutes later — sometimes seconds — it is live at a public URL.
 
-- Single-file HTML/CSS/JS — landings, mockups, prototypes, internal tools, dashboards.
-- Media assets — images (PNG, JPG, SVG), audio (MP3), documents. Multi-file projects with relative links.
-- Every save is a git commit. Rollback to any point with one phrase.
-- Optional GitHub sync — link a project to a repo, push on demand.
-- Multi-collaborator via scoped access keys (PAPs). Mint, send, revoke.
-- Full management UI on the master page — create/delete projects, mint/revoke PAPs.
-- Two entry points: [Claude for Chrome](https://chromewebstore.google.com/detail/claude-for-chrome/fmpnliohjhemenmnlpbfagaolkdacoja) extension, or paste the URL into Claude.ai / Claude Desktop.
+---
 
-## What is coming next
+## What you need
 
-- Runtime for user backend code (Node/Python in sandboxed containers).
-- Per-project databases (SQLite/Postgres).
-- One-command VPS setup script.
-- LLM routing inside projects via OpenRouter.
-- Hosted drafts spaces for people without a server.
+1. **Anthropic Claude**, any plan (Free works), logged in in Chrome
+2. **[Claude for Chrome extension](https://chromewebstore.google.com/detail/claude-for-chrome/fmpnliohjhemenmnlpbfagaolkdacoja)**
+3. **A drafts link** — your personal project link, no signup
 
-## Access model: MAP and PAP
+That is the entire stack.
 
-Two kinds of access keys, both delivered as URLs.
+---
 
-**MAP — Master Access Pass.** One per server. Belongs to the owner. Creates projects, mints access keys, deletes anything.
+## What it does today
 
-**PAP — Project Access Pass.** Minted by the owner from MAP. Scoped to one project. Send the URL to a collaborator — they paste it into their own Claude chat.
+- **Unlimited projects.** Websites, PWAs, AI-powered tools — anything that lives at a URL.
+- **Public URLs out of the box.** Every project lives at a clean address the moment you publish.
+- **Stunning output.** Claude generates production-quality HTML, CSS, JS — fast, adaptive, mobile-ready. Full interactivity, animations, forms, third-party embeds.
+- **Git-versioned.** Every change tracked. Rollback is one sentence away.
+- **Two zones per project.** A `drafts/` working zone for iteration; a `live/` zone for the public version. Atomic promote when you are ready.
+- **Collaboration by link.** Invite unlimited contributors — each one gets their own isolated branch. You review and merge. No shared passwords, no Figma invites, no GitHub permissions.
+- **Optional GitHub sync.** Push to your own repo when you want to deploy elsewhere too.
+- **Zero registration.** Your Claude login is your entire identity.
 
-Both URLs embed the auth token in the path. URL is the credential. If a URL leaks, revoke from master, mint a new one. The instruction page at each URL contains a human-readable overview plus a machine-readable JSON block that any LLM can parse.
+---
 
-## Architecture
+## Coming soon
 
-Intentionally boring:
+- **Databases.** SQL for user data. Vector storage for knowledge bases. Host real apps with real users.
+- **Multi-LLM.** Use any model while building, or let your visitors pick theirs. Claude, GPT, open-source — whatever fits.
+- **Your own Drafts server.** One-command install on any VPS.
+- **Deployment bridges.** Beyond GitHub — to wherever you want your code and projects to live.
 
-- **nginx** — static files, HTTPS termination, proxies `/drafts/*` to receiver.
-- **Node.js receiver** (`app.js`) — Express + simple-git, ESM, port 3100.
-- **Local git** — every project's `drafts/` folder is a repo.
-- **Filesystem** — `<DRAFTS_DIR>/<project>/{drafts,live}/`. Atomic swap on promote.
-- **Let's Encrypt** — certificate.
-- **PM2** — process manager.
+---
 
-No container orchestration, no message queues, no managed DB. Runs on a 1-vCPU, 2GB-RAM box.
+## How it works under the hood
 
-## Folder shape
+Three-tier access model, based on magic links:
 
-Every project is the same:
-
-```
-<DRAFTS_DIR>/<project>/
-├── drafts/    # work in progress, every save commits to git
-└── live/      # published, atomic copy from drafts
-```
-
-`/live/<project>/` renders as a static site. If `index.html` is present, the folder URL shows the website. Otherwise — file listing.
-
-## API
-
-All endpoints require `Authorization: Bearer <token>` header. Token is either the MAP or a valid PAP for the project.
-
-### MAP-only
-
-| Method | Path | Body | Does |
+| Tier | URL | Who | Scope |
 |---|---|---|---|
-| GET | `/whoami` | — | verify role + token |
-| GET | `/projects` | — | list all projects |
-| POST | `/projects` | `{name, description?, github_repo?}` | create project (auto-creates /live/ symlink) |
-| DELETE | `/projects/:name` | — | wipe project entirely |
-| POST | `/projects/:name/keys` | `{name?}` | mint PAP, returns `activation_url` |
-| GET | `/projects/:name/keys` | — | list all PAPs for project |
-| DELETE | `/projects/:name/keys/:id` | — | revoke a PAP |
+| **SAP** (Server API Pass) | `/s/<token>` | Server operator | Root. Create/delete any project, mint PAPs. One per server. |
+| **PAP** (Project API Pass) | `/p/<token>` | Project owner | One project. Mint AAPs, merge, publish, rollback. |
+| **AAP** (Agent API Pass) | `/a/<token>` | Contributor or AI agent | One project. Writes to an isolated `aap/<id>` branch. Owner reviews and merges. |
 
-### PAP (and MAP)
+Each link opens to a welcome page containing a machine-readable instruction block. Claude reads this on first load and knows instantly:
 
-| Method | Path | Body | Does |
+- What tier it is operating at
+- Which endpoints are available
+- How to interpret natural language user intent
+- How to verify work after publishing
+- How to fall back gracefully across transports
+
+No UI dashboards. No control panels. All control plane flows through Claude chat.
+
+---
+
+## Stack
+
+- **Node 18** + **Express** + **simple-git**
+- **nginx** for TLS, static serving, and reverse proxy
+- **pm2** for process management
+- **Git** for versioning (local repos per project, optional GitHub mirror)
+- **Let's Encrypt** for SSL
+- **Flat JSON state** at `.state.json` — no database required
+
+---
+
+## Rate limits
+
+Hardcoded, Claude Code style. Tier-based sliding windows:
+
+| Tier | per minute | per hour | per day |
 |---|---|---|---|
-| GET | `/project/info` | — | metadata + folder paths |
-| POST | `/upload` | `{filename, content, where?:"drafts"\|"live"}` | write file (default `drafts`) |
-| GET | `/files?where=drafts\|live` | — | list files |
-| GET | `/file?path=...&where=drafts\|live` | — | read file content |
-| DELETE | `/file?path=...&where=drafts\|live` | — | delete file |
-| POST | `/commit` | `{message?}` | snapshot drafts/ into git |
-| POST | `/promote` | `{message?}` | atomic drafts → live, publish |
-| GET | `/history?limit=50` | — | commit log |
-| POST | `/rollback` | `{commit}` | restore drafts to past commit |
-| POST | `/github/sync` | `{branch?, message?}` | push to linked GitHub repo |
+| SAP | 120 | 2,000 | 20,000 |
+| PAP | 60 | 600 | 5,000 |
+| AAP | 10 | 60 | 300 |
 
-## Installation
+Over-limit requests get `HTTP 429` with `Retry-After`.
 
-> One-command setup script is on the roadmap. Until then, manual steps.
+---
 
-1. **Provision a Linux server.** Ubuntu 24.04 recommended. 1 vCPU, 2GB RAM is enough. Point a domain at it.
-2. **Install nginx, Node.js 18+, git, certbot.**
-3. **Clone this repo** into `/opt/drafts-receiver/`.
-4. **Copy `.env.example` to `.env`.** Generate a master token with `openssl rand -hex 32` and put it in `BEARER_TOKEN`. Fill in `DRAFTS_DIR`, `PUBLIC_BASE_URL`.
-5. **`npm install`.**
-6. **Configure nginx** to proxy `/drafts/` to `localhost:3100` and serve `/live/` and `/drafts-view/` from the drafts directory via autoindex. (Full nginx config coming in the setup script.)
-7. **Copy static files** — `static/drafts-launch.js` and `static/drafts-manage.js` go to nginx's html root.
-8. **Run the receiver** under pm2: `pm2 start app.js --name drafts-receiver`.
-9. **Get your MAP URL** — `https://your-domain/m/<BEARER_TOKEN>`. Paste it into any Claude chat.
+## Status
 
-## Security model
+**v0.3 — live in beta** at [beta.labs.vc](https://beta.labs.vc/drafts/).
 
-- **URL = credential.** The token is in the path. Anyone with the URL can act. Treat URLs like API keys.
-- **Revocable.** If a PAP leaks, delete it from the MAP management UI. The URL stops working immediately.
-- **Isolated.** PAPs are scoped to one project. They cannot read or write other projects.
-- **No accounts, no registration.** The system is owned end-to-end by one person.
-- **Not for production.** For prototypes, internal tools, demos. No audit log, no 2FA, no RBAC.
-
-## What it is not
-
-- Not production hosting. If a project graduates to a real product, move it.
-- Not multi-tenant. One owner per server.
-- Not a publishing platform. No discovery, no SEO, no aggregated index.
-- Not a website builder. The interface is a chat. Say what to change.
+---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
-## The bet underneath
-
-The most useful tools of the next few years will be the ones that assume an LLM is in the loop and design every interface accordingly. Not LLM features bolted onto existing tools — tools where the LLM is the primary user and the human supervises through conversation.
-
-Drafts is one experiment in that direction.
+MIT.
 
 ---
 
-*Labs Drafts · v0.2 · by [Labs](https://labs.vc)*
+*Part of [labs.vc](https://labs.vc). Built in the open.*
