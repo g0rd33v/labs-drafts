@@ -4,13 +4,13 @@
 
 Drafts turns any Claude conversation into a workspace where you ship real websites, progressive web apps, and AI tools. No registration. No coding. No vibe coding. Just vibe.
 
-Live at **[beta.labs.vc](https://beta.labs.vc/drafts/)**.
+Live at **[beta.labs.vc](https://beta.labs.vc/drafts/)** — the canonical server (`drafts_0`).
 
 ---
 
 ## What it is
 
-A lightweight server that sits between Claude and the public web. You get a personal link. You drop it into the Claude for Chrome extension sidebar. Claude reads the page, parses embedded machine-readable instructions, takes on the right level of access automatically, and is ready to build.
+A lightweight server that sits between Claude and the public web. You get a personal portable link. You drop it into the Claude for Chrome extension sidebar. Claude reads the page, parses embedded machine-readable instructions, takes on the right level of access automatically, and is ready to build.
 
 Then you talk.
 
@@ -23,11 +23,41 @@ Minutes later — sometimes seconds — it is live at a public URL.
 
 ---
 
+## The portable link format
+
+Every Drafts link follows one pattern:
+
+```
+drafts_<server_number>_<token>
+```
+
+Three parts, readable at a glance:
+
+- **`drafts`** — the protocol. Always.
+- **`<server_number>`** — which Drafts server hosts this project. `0` is the canonical server at [beta.labs.vc](https://beta.labs.vc). Other operators run 1, 2, 3… declared in the public registry.
+- **`<token>`** — the access credential. Its prefix reveals the tier automatically: `pap_` = project owner, `aap_` = contributor, otherwise = server root.
+
+Example links:
+
+```
+drafts_0_<64hex>                 → SAP (server root)
+drafts_0_pap_<48hex>             → PAP (project owner)
+drafts_0_aap_<48hex>             → AAP (contributor)
+```
+
+One link tells any Claude everything it needs: which server, which tier, which project. No lookups required.
+
+### The registry
+
+Drafts maintains a public registry at [**beta.labs.vc/drafts/registry.json**](https://beta.labs.vc/drafts/registry.json) listing every registered Drafts server. Want to run your own instance and claim a number? Open a PR against this repository — the registry is owned and maintained by Drafts itself.
+
+---
+
 ## What you need
 
 1. **Anthropic Claude**, any plan (Free works), logged in in Chrome
 2. **[Claude for Chrome extension](https://chromewebstore.google.com/detail/claude-for-chrome/fmpnliohjhemenmnlpbfagaolkdacoja)**
-3. **A drafts link** — your personal project link, no signup
+3. **A drafts link** — your personal `drafts_0_…` identifier
 
 That is the entire stack.
 
@@ -48,30 +78,30 @@ That is the entire stack.
 
 ## Coming soon
 
-- **Databases.** SQL for user data. Vector storage for knowledge bases. Host real apps with real users.
-- **Multi-LLM.** Use any model while building, or let your visitors pick theirs. Claude, GPT, open-source — whatever fits.
-- **Your own Drafts server.** One-command install on any VPS.
-- **Deployment bridges.** Beyond GitHub — to wherever you want your code and projects to live.
+- **Databases.** SQL for user data. Vector storage for knowledge bases.
+- **Multi-LLM.** Use any model while building, or let your visitors pick theirs.
+- **Self-hosted Drafts.** One-command install on any VPS. Claim a number in the registry.
+- **Deployment bridges.** Beyond GitHub — to wherever your code lives.
 
 ---
 
-## How it works under the hood
+## Three-tier access model
 
-Three-tier access model, based on magic links:
+Drafts uses a simple hierarchy based on the portable link format:
 
-| Tier | URL | Who | Scope |
+| Tier | Link format | Who | Scope |
 |---|---|---|---|
-| **SAP** (Server API Pass) | `/s/<token>` | Server operator | Root. Create/delete any project, mint PAPs. One per server. |
-| **PAP** (Project API Pass) | `/p/<token>` | Project owner | One project. Mint AAPs, merge, publish, rollback. |
-| **AAP** (Agent API Pass) | `/a/<token>` | Contributor or AI agent | One project. Writes to an isolated `aap/<id>` branch. Owner reviews and merges. |
+| **SAP** — Server API Pass | `drafts_<N>_<64hex>` | Server operator | Root. Create/delete any project, mint PAPs. One per server. |
+| **PAP** — Project API Pass | `drafts_<N>_pap_<48hex>` | Project owner | One project. Mint AAPs, merge contributions, publish, rollback. |
+| **AAP** — Agent API Pass | `drafts_<N>_aap_<48hex>` | Contributor or AI agent | One project. Writes to an isolated `aap/<id>` branch. Owner reviews and merges. |
 
 Each link opens to a welcome page containing a machine-readable instruction block. Claude reads this on first load and knows instantly:
 
 - What tier it is operating at
+- Which server it is speaking to
 - Which endpoints are available
 - How to interpret natural language user intent
 - How to verify work after publishing
-- How to fall back gracefully across transports
 
 No UI dashboards. No control panels. All control plane flows through Claude chat.
 
@@ -104,7 +134,7 @@ Over-limit requests get `HTTP 429` with `Retry-After`.
 
 ## Status
 
-**v0.3 — live in beta** at [beta.labs.vc](https://beta.labs.vc/drafts/).
+**v0.3 — live in beta** at [beta.labs.vc](https://beta.labs.vc/drafts/). Canonical server is `drafts_0`.
 
 ---
 

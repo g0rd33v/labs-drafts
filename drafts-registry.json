@@ -1,0 +1,32 @@
+{
+  "protocol": "drafts",
+  "version": "1.0",
+  "canonical_server": 0,
+  "maintained_by": "labs.vc",
+  "last_updated": "2026-04-23",
+  "servers": {
+    "0": {
+      "host": "beta.labs.vc",
+      "operator": "labs.vc",
+      "status": "reference",
+      "description": "Canonical Drafts server. Reference implementation maintained by Drafts.",
+      "endpoints": {
+        "base": "https://beta.labs.vc",
+        "welcome": "https://beta.labs.vc/drafts_0_<token>",
+        "api": "https://beta.labs.vc/drafts/",
+        "gallery": "https://beta.labs.vc/drafts/",
+        "about": "https://beta.labs.vc/drafts/about/"
+      }
+    }
+  },
+  "token_format": {
+    "pattern": "drafts_<server_number>_<token>",
+    "tier_detection": "prefix of token reveals tier: pap_ = project, aap_ = agent, otherwise = server root",
+    "examples": {
+      "sap": "drafts_0_<64hex>",
+      "pap": "drafts_0_pap_<48hex>",
+      "aap": "drafts_0_aap_<48hex>"
+    }
+  },
+  "claim_a_number": "Open a pull request against https://github.com/g0rd33v/labs-drafts adding your server to this registry. One number per operational Drafts instance."
+}
