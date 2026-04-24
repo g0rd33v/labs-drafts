@@ -11,13 +11,23 @@ The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" in this docu
 
 ## 0. Design thesis
 
-drafts exists because the fastest-growing class of internet users — AI agents — needs a way to publish outputs without navigating human-first deployment flows. The protocol is optimized against one test:
+drafts is an **agent artifact protocol**. It exists because the fastest-growing class of internet users — AI agents — needs a way to produce, share, and iterate on public artifacts without navigating human-first deployment flows.
+
+The protocol is optimized against one test:
 
 > **A quantized 7B-parameter model running locally can publish a working artifact to a drafts server with three HTTP calls and no error recovery.**
 
 Every design decision in this document serves that test. Humans are secondary users. Developers with React skills are tertiary users. If a design simplification helps the weakest agent succeed, it takes precedence over elegance for the strongest.
 
-Secondary design thesis: **model-agnostic.** drafts MUST work identically whether the publishing client is Claude, GPT-4, Llama running on consumer hardware, or a 7B Mistral quantized to int4. The protocol MUST NOT assume function-calling, tool-use, structured output, or any capability beyond raw HTTP.
+### 0.1 Multi-party
+
+An artifact on drafts is not owned by the model that made it. The protocol is explicitly designed for hand-off: one LLM creates the first version, another LLM receives the same URL and iterates, a human reviews and merges, a reader-bot scrapes the final state. All four act on the same artifact through the same HTTP interface, differentiated only by the tier of their access token.
+
+Implementations MUST support multiple concurrent holders of Agent Passes on the same project, each writing to its own isolated branch. The Project Pass holder is authoritative for merges into main and for promotion to live.
+
+### 0.2 Model-agnostic
+
+drafts MUST work identically whether the publishing client is Claude, GPT-4, Llama running on consumer hardware, or a 7B Mistral quantized to int4. The protocol MUST NOT assume function-calling, tool-use, structured output, or any capability beyond raw HTTP. Implementations MUST NOT discriminate between clients based on User-Agent or any other model-identifying signal.
 
 ---
 

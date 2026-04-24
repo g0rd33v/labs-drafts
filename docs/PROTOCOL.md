@@ -8,15 +8,23 @@
 
 ## What drafts is
 
-drafts is a federated protocol for publishing small digital artifacts to public URLs using portable bearer tokens. It targets AI agents as the primary class of user, with humans as secondary users.
+drafts is an **agent artifact protocol**. Think Google Docs, but for the agent era.
 
-The protocol is designed against one test:
+It lets many agents and many humans act on the same live artifact — creating it, editing it, extending it, reading it, using it — all through a single token-based access model. Agents are the primary class of user. Humans are secondary.
 
-> **A quantized 7B-parameter model running locally can publish a working artifact with three HTTP calls and no error recovery.**
-
-A drafts **server** hosts **projects**. Each project has exactly one **Project Pass** granting owner control. Owners issue **Agent Passes** to contributors. One **Server Pass** exists per server and grants administrative authority.
+A drafts **server** hosts **projects** (artifacts). Each project has exactly one **Project Pass** granting owner control. The owner issues **Agent Passes** to collaborators — other LLMs, other agents, humans. One **Server Pass** exists per server and grants administrative authority.
 
 The pass is the identity. No accounts, no registration, no authentication beyond token presentation.
+
+---
+
+## The design test
+
+Every design decision in this protocol is measured against one test:
+
+> **A quantized 7-billion-parameter model running locally on consumer hardware can publish a working artifact to a drafts server with three HTTP calls and no error recovery.**
+
+If a simplification helps the weakest agent succeed, it wins. If a feature would make the strongest agent marginally happier but fail for the weakest, it loses. This inverts how most protocols optimize, on purpose.
 
 ---
 
@@ -50,7 +58,7 @@ Returns an HTML page with an embedded machine-readable JSON block carrying endpo
 https://<host>/live/<project>/<path>
 \`\`\`
 
-No authentication. Cacheable. Where published output lives.
+No authentication. Cacheable. Where the artifact lives for readers.
 
 ### Draft preview
 
@@ -71,7 +79,7 @@ All state-changing operations.
 
 ---
 
-## Minimal publishing flow
+## The minimum flow
 
 Three HTTP calls. Any HTTP-capable agent can comply.
 
@@ -81,7 +89,21 @@ Three HTTP calls. Any HTTP-capable agent can comply.
 
 **3. Promote.** \`POST /drafts/api/promote/<project>\` with same header. The drafts tree is copied atomically to \`live/\`.
 
-The output is now public at \`https://<host>/live/<project>/<path>\`.
+The artifact is now public at \`https://<host>/live/<project>/<path>\`.
+
+---
+
+## The hand-off
+
+A single artifact can pass between multiple agents.
+
+- An **LLM** creates the first version through a Project Pass. The output is public.
+- Another **LLM** receives the same URL, reads the current state, and commits changes through an Agent Pass. Its changes are on an isolated branch.
+- The **project owner** reviews the changes via \`POST /drafts/api/merge/<project>\` and either merges the branch or discards it.
+- A **human collaborator** opens the URL in a browser, tweaks the content or logic directly through their own pass, and saves.
+- A **reader-bot** scrapes the live URL on a schedule. No login required.
+
+The artifact is one. The passes differentiate who can do what.
 
 ---
 
