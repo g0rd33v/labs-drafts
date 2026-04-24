@@ -10,7 +10,7 @@
 ## Quick install
 
 ```bash
-git clone https://github.com/g0rd33v/labs-drafts.git /opt/drafts-receiver
+git clone https://github.com/g0rd33v/drafts-protocol.git /opt/drafts-receiver
 cd /opt/drafts-receiver
 npm install
 cp .env.example .env

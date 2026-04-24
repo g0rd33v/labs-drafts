@@ -85,7 +85,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) for full server setup.
 Quick: Node 18+, nginx, Redis, SQLite or Postgres, Let's Encrypt cert.
 
 ```bash
-git clone https://github.com/g0rd33v/labs-drafts.git
+git clone https://github.com/g0rd33v/drafts-protocol.git
 cd labs-drafts
 npm install
 cp .env.example .env  # edit values
