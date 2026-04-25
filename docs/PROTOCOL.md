@@ -32,11 +32,11 @@ If a simplification helps the weakest agent succeed, it wins. If a feature would
 
 | Tier | Portable form | Entropy | Authority |
 |---|---|---|---|
-| **Server** | \`drafts_server_<n>_<16hex>\` | 64 bits | Create/delete projects, mint passes, all project operations |
-| **Project** | \`drafts_project_<n>_<12hex>\` | 48 bits | Edit drafts, promote to live, mint agent passes, set GitHub mirror, rotate own pass |
-| **Agent** | \`drafts_agent_<n>_<10hex>\` | 40 bits | Write to own branch only. Cannot promote. Cannot mint |
+| **Server** | `drafts_server_<n>_<16hex>` | 64 bits | Create/delete projects, mint passes, all project operations |
+| **Project** | `drafts_project_<n>_<12hex>` | 48 bits | Edit drafts, promote to live, mint agent passes, set GitHub mirror, rotate own pass |
+| **Agent** | `drafts_agent_<n>_<10hex>` | 40 bits | Write to own branch only. Cannot promote. Cannot mint |
 
-\`<n>\` is the server number from the federation registry. \`0\` is reserved for the reference server operated by Labs.
+`<n>` is the server number from the federation registry. `0` is reserved for the reference server operated by Labs **and** is the default for local/unregistered installs.
 
 Wire-format secrets MUST use lowercase hex. Length is normative.
 
@@ -46,34 +46,34 @@ Wire-format secrets MUST use lowercase hex. Length is normative.
 
 ### Welcome (discovery)
 
-\`\`\`
+```
 https://<host>/drafts/pass/<portable_token>
-\`\`\`
+```
 
 Returns an HTML page with an embedded machine-readable JSON block carrying endpoint URLs, tier, capabilities, and rate limits. Agents parse the JSON. Humans read the page.
 
 ### Public artifacts
 
-\`\`\`
+```
 https://<host>/live/<project>/<path>
-\`\`\`
+```
 
 No authentication. Cacheable. Where the artifact lives for readers.
 
 ### Draft preview
 
-\`\`\`
+```
 https://<host>/drafts-view/<project>/<path>
-\`\`\`
+```
 
 Current draft state. In 0.2 readable by anyone who knows the project name; future versions may gate by pass.
 
 ### API
 
-\`\`\`
+```
 https://<host>/drafts/api/<operation>
 Authorization: Bearer <secret>
-\`\`\`
+```
 
 All state-changing operations.
 
@@ -83,13 +83,13 @@ All state-changing operations.
 
 Three HTTP calls. Any HTTP-capable agent can comply.
 
-**1. Discover.** GET the welcome URL. Parse the machine JSON for \`endpoints.files\` and \`endpoints.promote\`.
+**1. Discover.** GET the welcome URL. Parse the machine JSON for `endpoints.files` and `endpoints.promote`.
 
-**2. Write.** \`PUT /drafts/api/files/<project>/<path>\` with body = file content and header \`Authorization: Bearer <secret>\`.
+**2. Write.** `PUT /drafts/api/files/<project>/<path>` with body = file content and header `Authorization: Bearer <secret>`.
 
-**3. Promote.** \`POST /drafts/api/promote/<project>\` with same header. The drafts tree is copied atomically to \`live/\`.
+**3. Promote.** `POST /drafts/api/promote/<project>` with same header. The drafts tree is copied atomically to `live/`.
 
-The artifact is now public at \`https://<host>/live/<project>/<path>\`.
+The artifact is now public at `https://<host>/live/<project>/<path>`.
 
 ---
 
@@ -99,7 +99,7 @@ A single artifact can pass between multiple agents.
 
 - An **LLM** creates the first version through a Project Pass. The output is public.
 - Another **LLM** receives the same URL, reads the current state, and commits changes through an Agent Pass. Its changes are on an isolated branch.
-- The **project owner** reviews the changes via \`POST /drafts/api/merge/<project>\` and either merges the branch or discards it.
+- The **project owner** reviews the changes via `POST /drafts/api/merge/<project>` and either merges the branch or discards it.
 - A **human collaborator** opens the URL in a browser, tweaks the content or logic directly through their own pass, and saves.
 - A **reader-bot** scrapes the live URL on a schedule. No login required.
 
@@ -109,32 +109,34 @@ The artifact is one. The passes differentiate who can do what.
 
 ## Federation
 
-Servers are independent. A pass from server A is meaningless on server B. Federation lives in the registry:
+Servers are independent. A pass from server A is meaningless on server B. Federation lives in the registry, hosted on GitHub:
 
-\`\`\`
-https://beta.labs.vc/drafts/registry.json
-\`\`\`
+```
+https://github.com/g0rd33v/drafts-protocol/blob/main/drafts-registry.json
+```
 
-Each server has a non-negative integer ID. To join, open a pull request adding your server entry. See [REGISTRY.md](REGISTRY.md).
+Raw JSON: [`drafts-registry.json`](https://raw.githubusercontent.com/g0rd33v/drafts-protocol/main/drafts-registry.json).
+
+Each server has a non-negative integer ID. Server `0` is reserved for the reference server **and** for any local/unregistered install — every fresh install starts as server `0` and operates locally without registration. To claim a public number, open a pull request adding your server entry. See [REGISTRY.md](REGISTRY.md).
 
 ---
 
 ## Capabilities
 
-Servers advertise what they support via the \`capabilities\` array in the machine JSON and registry. 0.2 vocabulary:
+Servers advertise what they support via the `capabilities` array in the machine JSON and registry. 0.2 vocabulary:
 
 | Token | Meaning |
 |---|---|
-| \`static\` | HTML, CSS, JS, fonts |
-| \`media\` | Images, audio, video |
-| \`git\` | Per-commit history and rollback |
-| \`github-sync\` | Project mirrors to an external GitHub repo |
-| \`sql\` | Per-project relational storage (reserved, 1.1+) |
-| \`vector\` | Per-project vector index (reserved, 1.1+) |
-| \`runtime\` | Server-side code execution (reserved, 2.0+) |
-| \`llm\` | Server-routed LLM inference (reserved, 2.0+) |
-| \`gpu\` | GPU compute access (reserved, capability-credential passes) |
-| \`video-gen\` | Video generation (reserved, capability-credential passes) |
+| `static` | HTML, CSS, JS, fonts |
+| `media` | Images, audio, video |
+| `git` | Per-commit history and rollback |
+| `github-sync` | Project mirrors to an external GitHub repo |
+| `sql` | Per-project relational storage (reserved, 1.1+) |
+| `vector` | Per-project vector index (reserved, 1.1+) |
+| `runtime` | Server-side code execution (reserved, 2.0+) |
+| `llm` | Server-routed LLM inference (reserved, 2.0+) |
+| `gpu` | GPU compute access (reserved, capability-credential passes) |
+| `video-gen` | Video generation (reserved, capability-credential passes) |
 
 Servers MUST only declare capabilities they actually implement.
 
@@ -145,7 +147,7 @@ Servers MUST only declare capabilities they actually implement.
 An implementation is **drafts/0.2-conformant** if it:
 
 1. Accepts portable tokens matching the grammar of [SPEC.md §1](SPEC.md)
-2. Serves welcome pages at \`/drafts/pass/<token>\` with both HTML and embedded machine JSON ([SPEC.md §5](SPEC.md))
+2. Serves welcome pages at `/drafts/pass/<token>` with both HTML and embedded machine JSON ([SPEC.md §5](SPEC.md))
 3. Implements the three minimum operations (files PUT, promote POST, project creation POST) with Bearer auth ([SPEC.md §3](SPEC.md))
 4. Publishes a registry entry matching the canonical schema ([SPEC.md §6](SPEC.md))
 5. Enforces at least the minimum per-token rate limits ([SPEC.md §4](SPEC.md))
