@@ -1,7 +1,21 @@
 {
-  "name": "drafts-receiver",
-  "version": "1.0.0",
+  "name": "drafts-protocol",
+  "version": "0.2.0",
+  "description": "Reference implementation of the drafts protocol — agent artifact server with three-tier access (server/project/agent passes), git versioning, and federated registry.",
   "type": "module",
+  "main": "drafts.js",
+  "scripts": {
+    "start": "node drafts.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/g0rd33v/drafts-protocol.git"
+  },
+  "homepage": "https://github.com/g0rd33v/drafts-protocol",
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^4.19.0",

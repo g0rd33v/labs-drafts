@@ -1,8 +1,6 @@
 node_modules/
 .env
+drafts.env
+.state.json
 *.log
-data/
-logs/
-backup/
-*.bak.*
-pre-*.js
+.DS_Store
