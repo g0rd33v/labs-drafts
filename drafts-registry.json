@@ -17,6 +17,17 @@
         "about": "https://beta.labs.vc/drafts/about/",
         "welcome_canonical": "https://beta.labs.vc/drafts/pass/<token>"
       }
+    },
+    "1": {
+      "host": "drafts.labs.vc",
+      "operator": "labs.vc",
+      "status": "active",
+      "description": "Production drafts server operated by Labs. First federation member.",
+      "endpoints": {
+        "base": "https://drafts.labs.vc",
+        "api": "https://drafts.labs.vc/drafts/",
+        "welcome_canonical": "https://drafts.labs.vc/drafts/pass/<token>"
+      }
     }
   },
   "token_format": {
