@@ -11,13 +11,28 @@ AI artifacts today are dead ends. Static one-shots — generated, downloaded, st
 
 **drafts** makes them living. Every artifact becomes a continuously updatable, openly readable, interactively usable, forkable thing — shared by many agents and many humans through a single token-based access model. LLMs create. Other agents extend. Humans tweak. Readers consume.
 
-\`\`\`
-drafts_server_0_91e52304063d5440     full server control
-drafts_project_0_a30aca1fe85b        project owner
-drafts_agent_0_b7fabf75b3            contributor, isolated branch
-\`\`\`
+```
+drafts_server_0_<16hex>      full server control
+drafts_project_0_<12hex>     project owner
+drafts_agent_0_<10hex>       contributor, isolated branch
+```
 
 Any capability that can issue three HTTP requests can participate.
+
+---
+
+## Run your own drafts server in one command
+
+On a fresh Ubuntu 22.04+ VPS with a domain pointing at it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/g0rd33v/drafts-protocol/main/install.sh \
+  | bash -s drafts.example.com admin@example.com
+```
+
+That's it. The script installs nginx, certbot, Node.js 20, pm2, clones this repo, configures everything, issues HTTPS, mints your SAP token, and prints it once. ~3 minutes. Then you create your first project with one curl, hand the returned link to anyone, and they paste it into Claude for Chrome to start building.
+
+See [docs/INSTALL.md](docs/INSTALL.md) for prerequisites, troubleshooting, and the manual install path.
 
 ---
 
@@ -74,11 +89,11 @@ Capability-bundled passes (GPU, video-gen, RAG) are sold separately and priced h
 
 ## Reference implementation
 
-This repository contains the reference drafts server, operated by [Labs](https://labs.vc) as federation member \`0\` at:
+This repository contains the reference drafts server, operated by [Labs](https://labs.vc) as federation member `0` at:
 
 **https://beta.labs.vc/drafts/**
 
-Stack: Node.js 18+ (Express 4), nginx 1.24 (TLS via Let's Encrypt), Redis (rate-limit state), SQLite + per-project git repos (project registry).
+Stack: Node.js 18+ (Express 4), nginx 1.24 (TLS via Let's Encrypt), per-project git repos.
 
 See [REFERENCE_IMPLEMENTATION.md](REFERENCE_IMPLEMENTATION.md) for operational detail.
 
@@ -92,16 +107,23 @@ Contact eugene@labs.vc for a Project Pass. Paste its welcome URL into Claude for
 
 ### Run your own
 
-\`\`\`bash
-git clone https://github.com/g0rd33v/drafts-protocol.git
-cd drafts-protocol
-npm install
-cp .env.example .env
-# set BEARER_TOKEN (16-hex), PUBLIC_BASE, paths
-node app.js
-\`\`\`
+```bash
+curl -fsSL https://raw.githubusercontent.com/g0rd33v/drafts-protocol/main/install.sh \
+  | bash -s drafts.example.com admin@example.com
+```
 
-Register with the federation by opening a pull request adding your server entry to [\`registry.json\`](registry.json). See [REGISTRY.md](docs/REGISTRY.md).
+Or manually:
+
+```bash
+git clone https://github.com/g0rd33v/drafts-protocol.git /opt/drafts
+cd /opt/drafts
+npm install
+cp .env.example /etc/labs/drafts.env
+# edit /etc/labs/drafts.env — at minimum set PUBLIC_BASE_URL
+node drafts.js
+```
+
+Register your server with the federation by opening a PR adding your entry to [`drafts-registry.json`](drafts-registry.json). See [REGISTRY.md](docs/REGISTRY.md).
 
 ---
 
@@ -109,19 +131,19 @@ Register with the federation by opening a pull request adding your server entry 
 
 Three HTTP calls:
 
-\`\`\`
+```
 1. GET  https://<host>/drafts/pass/<portable_token>
    (parse machine JSON, read endpoints)
 
-2. PUT  https://<host>/drafts/api/files/<project>/<path>
+2. POST https://<host>/drafts/upload
    Authorization: Bearer <secret>
-   Body: <file content>
+   Body: {"filename":"index.html","content":"..."}
 
-3. POST https://<host>/drafts/api/promote/<project>
+3. POST https://<host>/drafts/promote
    Authorization: Bearer <secret>
-\`\`\`
+```
 
-Output is now public at \`https://<host>/live/<project>/<path>\`.
+Output is now public at `https://<host>/live/<project>/`.
 
 ---
 
@@ -135,7 +157,9 @@ Output is now public at \`https://<host>/live/<project>/<path>\`.
 | HTTPS with Let's Encrypt | ✓ | ✓ | ✓ |
 | Per-tier rate limits | ✓ | ✓ | ✓ |
 | GitHub bidirectional mirror | ✓ | ✓ | ✓ |
+| GitHub config via SAP/PAP API | ✓ | ✓ | ✓ |
 | Public federation registry | ✓ | ✓ | ✓ |
+| One-command installer | ✓ | ✓ | ✓ |
 | Capability vocabulary | ✓ | ✓ | ✓ |
 | Token rotation endpoint | ✓ | ✓ | ✓ |
 | Agent-branch merge endpoint | ✓ | ✓ | ✓ |
