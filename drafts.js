@@ -1,4 +1,4 @@
-// drafts v0.4 — Three-tier access model + Telepath (Telegram bot integration).
+// drafts v0.5 — Three-tier access model + Telepath + Project Bots.
 //
 // Public URL scheme:
 //   /<n>/                     -> live
@@ -14,6 +14,7 @@
 //   PAP — project owner
 //   AAP — contributor
 //   TAP — Telegram bot pass (set by SAP, attaches a bot to this server)
+//   PBOT — per-project bot (set by PAP via WebApp, attaches a public bot to a project)
 //
 // Spec & registry: https://github.com/g0rd33v/drafts-protocol
 
@@ -27,6 +28,7 @@ import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import { buildRichContext } from "./rich-context.js";
 import { initTelepath, mountTelepathRoutes, hooks as telepathHooks, getTelepathStatus } from "./telepath.js";
+import { initProjectBots } from "./project-bots.js";
 
 // Config: try /etc/labs/drafts.env first (production), then ./drafts.env (dev), then legacy
 const ENV_CANDIDATES = ['/etc/labs/drafts.env', './drafts.env', '/opt/drafts-receiver/.env'];
@@ -36,6 +38,8 @@ const PORT            = Number(process.env.PORT || 3100);
 const SERVER_NUMBER   = Number(process.env.SERVER_NUMBER || 0);
 let   SAP_TOKEN       = process.env.BEARER_TOKEN || process.env.SAP_TOKEN;
 const DRAFTS_DIR      = process.env.DRAFTS_DIR || '/var/lib/drafts';
+// Expose DRAFTS_DIR to all child modules (project-bots.js reads live/index.html via this)
+process.env.DRAFTS_DIR = DRAFTS_DIR;
 const PUBLIC_BASE     = process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE || (() => {
   console.error('FATAL: PUBLIC_BASE_URL must be set (e.g. https://drafts.example.com)');
   process.exit(1);
@@ -406,10 +410,10 @@ app.use(express.json({ limit: '10mb' }));
 // Health
 app.get('/drafts/health', (req, res) => {
   const tp = getTelepathStatus();
-  res.json({ ok: true, version: '0.4', protocol: 'drafts', server_number: SERVER_NUMBER, telepath: tp });
+  res.json({ ok: true, version: '0.5', protocol: 'drafts', server_number: SERVER_NUMBER, telepath: tp });
 });
 
-// Mount Telepath routes (TAP management + WebApp + Telepath API).
+// Mount Telepath routes (TAP management + WebApp + Telepath API + Project Bots API).
 mountTelepathRoutes(app);
 
 // ─────────────────────────────────────────────────────────────
@@ -436,7 +440,7 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
 
   const machine = {
     system: 'drafts',
-    version: '0.4',
+    version: '0.5',
     tier,
     api_base: apiBase,
     auth: { header: 'Authorization', scheme: 'Bearer', token },
@@ -462,7 +466,7 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     on_first_load: { summary: project ? `Check ${apiBase}/project/info + files + history and greet based on state.` : 'Greet warmly, offer overview.' },
     transport: 'Try built-in HTTP tools first; on failure switch to Claude for Chrome silently.',
     capabilities: isSAP ? ['list_projects','create_project','delete_project','revoke_passes','configure_github_default','manage_telepath_bot']
-      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync']
+      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','attach_telegram_bot']
       : ['build_in_branch','read_live','read_history'],
     endpoints: isSAP ? [
       { method: 'GET', path: '/projects' },
@@ -499,7 +503,6 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     ? `Your project. Live at ${PUBLIC_BASE}/${project.name}/. ${versions.length} versions.`
     : `Contributor link to ${project.name}. Your changes go to your own branch.`;
 
-  // SAP-only: TAP management section (shown only on SAP welcome page, after rich context)
   let tapSection = '';
   if (isSAP) {
     tapSection = renderTapSection(tpStatus, token);
@@ -649,7 +652,7 @@ app.get('/drafts/server/stats', authSAP, (req, res) => {
     ok: true, server_number: SERVER_NUMBER, total_projects: state.projects.length,
     github_default_configured: !!(state.github_default && state.github_default.token),
     telepath: getTelepathStatus(),
-    projects: state.projects.map(p => ({ name: p.name, created_at: p.created_at, aap_count: (p.aaps || []).filter(a => !a.revoked).length })),
+    projects: state.projects.map(p => ({ name: p.name, created_at: p.created_at, aap_count: (p.aaps || []).filter(a => !a.revoked).length, bot_attached: !!(p.bot && p.bot.token) })),
   });
 });
 
@@ -661,6 +664,7 @@ app.get('/drafts/projects', authSAP, (req, res) => {
       created_at: p.created_at, live_url: `${PUBLIC_BASE}/${p.name}/`,
       pap: p.pap ? { id: p.pap.id, revoked: p.pap.revoked, activation_url: `${PUBLIC_BASE}/drafts/pass/drafts_project_${SERVER_NUMBER}_${p.pap.token.replace(/^pap_/,'')}` } : null,
       aaps: (p.aaps || []).map(a => ({ id: a.id, name: a.name, revoked: a.revoked })),
+      bot: p.bot ? { bot_username: p.bot.bot_username, subscriber_count: (p.bot.subscribers || []).length, last_synced_at: p.bot.last_synced_at } : null,
     })),
   });
 });
@@ -700,7 +704,7 @@ app.delete('/drafts/projects/:name/pap', authSAP, (req, res) => {
 app.get('/drafts/project/info', authAny, (req, res) => {
   const p = req.project;
   if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
-  res.json({ ok: true, project: p.name, description: p.description, github_repo: p.github_repo, created_at: p.created_at, live_url: `${PUBLIC_BASE}/${p.name}/`, viewer_tier: req.tier });
+  res.json({ ok: true, project: p.name, description: p.description, github_repo: p.github_repo, created_at: p.created_at, live_url: `${PUBLIC_BASE}/${p.name}/`, viewer_tier: req.tier, bot_attached: !!(p.bot && p.bot.token), bot_username: p.bot?.bot_username || null });
 });
 
 app.get('/drafts/project/stats', authPAPorSAP, async (req, res) => {
@@ -720,6 +724,7 @@ app.get('/drafts/project/stats', authPAPorSAP, async (req, res) => {
       recent_commits: log.all.map(c => ({ hash: c.hash.slice(0,7), message: c.message, date: c.date })),
       live_files_count: liveFiles.length,
       versions: { count: versions.length, latest: versions[versions.length - 1] || null, all: versions },
+      bot: p.bot ? { bot_username: p.bot.bot_username, subscribers: (p.bot.subscribers || []).length, last_synced_at: p.bot.last_synced_at } : null,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: 'stats_failed', detail: e.message });
@@ -1094,7 +1099,7 @@ app.use((req, res, next) => {
 });
 
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`drafts v0.4 listening on 127.0.0.1:${PORT}`);
+  console.log(`drafts v0.5 listening on 127.0.0.1:${PORT}`);
   console.log(`  public_base: ${PUBLIC_BASE}`);
   console.log(`  server_number: ${SERVER_NUMBER}`);
   console.log(`  data_dir: ${DRAFTS_DIR}`);
@@ -1117,5 +1122,13 @@ app.listen(PORT, '127.0.0.1', () => {
       createProject: _createProjectInternal,
       createAAP: _createAAPInternal,
     },
+  });
+
+  // Initialize project bots (rebuild long-pollers from state)
+  initProjectBots({
+    publicBase: PUBLIC_BASE,
+    getDraftsState: () => state,
+    saveDraftsState: saveState,
+    findProjectByName,
   });
 });
