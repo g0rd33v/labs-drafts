@@ -6,22 +6,16 @@
 //   Users send their PAP/AAP/SAP into the bot → the bot binds it
 //   to their Telegram user_id and opens the matching mini-app.
 //
-// Access policy (v0.4.1):
+// Access policy:
 //   The bot is restricted to Telegram Premium users. Non-premium users get
 //   a polite refusal. SAP-bound users always pass (server owner).
 //
+// Formatting:
+//   All bot messages use parse_mode: 'HTML'. Underscores in URLs/identifiers
+//   would break Markdown parsing (Telegram interprets _ as italic), so HTML
+//   is safer and only requires escaping &, <, >, " in user-supplied text.
+//
 // State:  /var/lib/drafts/.telepath.json  (separate from main state.json)
-//
-// HTTP routes mounted under /telepath/* by drafts.js:
-//   GET  /telepath/app/sap            — SAP web-app (admin)
-//   GET  /telepath/app/pap/:token     — PAP web-app (project dashboard)
-//   GET  /telepath/app/aap/:token     — AAP web-app (agent view)
-//   GET  /telepath/api/whoami         — initData-authed echo
-//   POST /telepath/api/sap/projects   — create project (initData=SAP)
-//   POST /telepath/api/pap/aaps       — generate AAP (initData=PAP)
-//   POST /telepath/api/forget         — drop a token binding
-//
-// All web-app pages auth via Telegram WebApp initData (HMAC-SHA256).
 
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -30,14 +24,14 @@ import crypto from 'crypto';
 import https from 'https';
 
 // ─────────────────────────────────────────────────────────────
-// Config (set by init() from drafts.js)
+// Config
 // ─────────────────────────────────────────────────────────────
 let DRAFTS_DIR = null;
 let PUBLIC_BASE = null;
 let SERVER_NUMBER = 0;
-let getSAP = null;             // () => string
-let getDraftsState = null;     // () => state ref
-let saveDraftsState = null;    // () => void
+let getSAP = null;
+let getDraftsState = null;
+let saveDraftsState = null;
 let findProjectByName = null;
 let findProjectByPAP = null;
 let findProjectAndAAPByAAPToken = null;
@@ -61,6 +55,7 @@ let botMeRefreshTimer = null;
 const now = () => new Date().toISOString();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// HTML escape — required for any user-supplied text inserted into HTML-mode bot messages
 function esc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -162,6 +157,17 @@ function tgApi(method, params = {}, opts = {}) {
     req.on('error', reject);
     req.write(body);
     req.end();
+  });
+}
+
+// Convenience: send message in HTML mode with safe defaults
+function tgSend(chatId, html, opts = {}) {
+  return tgApi('sendMessage', {
+    chat_id: chatId,
+    text: html,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    ...opts,
   });
 }
 
@@ -290,18 +296,16 @@ function findUsersBoundToTier(tier) {
 // Premium gate
 // ─────────────────────────────────────────────────────────────
 function isAllowed(tgFrom, user) {
-  // Premium users always allowed.
   if (tgFrom && tgFrom.is_premium) return true;
-  // SAP-bound users always allowed (server owners can be non-premium).
   if (user && user.bindings.some(b => b.tier === 'sap')) return true;
   return false;
 }
 
 const PREMIUM_REFUSAL =
-  '*Telegram Premium required*\n\n' +
+  '<b>Telegram Premium required</b>\n\n' +
   'This bot is open to Telegram Premium subscribers only. ' +
   'Upgrade to Premium in Telegram Settings to use Drafts.\n\n' +
-  '_If you are the server owner, paste your SAP token first to unlock access._';
+  '<i>If you are the server owner, paste your SAP token first to unlock access.</i>';
 
 // ─────────────────────────────────────────────────────────────
 // Bot UI helpers
@@ -312,27 +316,27 @@ function tierBadge(tier) {
   return { sap: '🔑 server', pap: '📁 project', aap: '🤝 agent' }[tier] || tier;
 }
 
-function welcomeText(user, isPremium) {
+function welcomeText(user) {
   const name = user && user.first_name ? user.first_name : 'there';
   const host = (() => { try { return new URL(PUBLIC_BASE).hostname; } catch (e) { return 'this server'; } })();
-  let t = `*Drafts Telepath*\nHi ${esc(name)} 👋\n\n`;
-  t += `Build a website by talking to Claude. This bot is your control center for \`${host}\`.\n\n`;
-  t += '*To get started:*\n';
+  let t = `<b>Drafts Telepath</b>\nHi ${esc(name)} 👋\n\n`;
+  t += `Build a website by talking to Claude. This bot is your control center for <code>${esc(host)}</code>.\n\n`;
+  t += '<b>To get started:</b>\n';
   t += '• /new — create your own project (free)\n';
-  t += '• Or paste a `pap_…` / `aap_…` token to open an existing one\n\n';
-  t += '*Other commands:* /help · /projects · /forget';
+  t += '• Or paste a <code>pap_…</code> / <code>aap_…</code> token to open an existing one\n\n';
+  t += '<b>Other commands:</b> /help · /projects · /forget';
   return t;
 }
 
 function helpText() {
-  let t = '*Drafts Telepath — commands*\n\n';
-  t += '/new `[name]` — create a new project (you become its owner)\n';
+  let t = '<b>Drafts Telepath — commands</b>\n\n';
+  t += '/new <code>[name]</code> — create a new project (you become its owner)\n';
   t += '/projects — list your projects and open dashboards\n';
   t += '/forget — remove a token binding\n';
-  t += '/notif `on|off` — toggle notifications\n';
+  t += '/notif <code>on|off</code> — toggle notifications\n';
   t += '/start — show the welcome message\n';
   t += '/help — show this message\n\n';
-  t += 'You can also paste any `pap_…`, `aap_…`, or `/drafts/pass/…` link directly into the chat.';
+  t += 'You can also paste any <code>pap_…</code>, <code>aap_…</code>, or <code>/drafts/pass/…</code> link directly into the chat.';
   return t;
 }
 
@@ -340,10 +344,10 @@ function projectsListText(user) {
   if (!user || user.bindings.length === 0) {
     return 'No projects yet. Try /new to create one.';
   }
-  let t = '*Your linked passes:*\n\n';
+  let t = '<b>Your linked passes:</b>\n\n';
   for (const b of user.bindings) {
     t += `${tierBadge(b.tier)}`;
-    if (b.project_name) t += ` · \`${esc(b.project_name)}\``;
+    if (b.project_name) t += ` · <code>${esc(b.project_name)}</code>`;
     t += ` · ${b.bound_at.slice(0,10)}\n`;
   }
   return t;
@@ -383,30 +387,29 @@ async function handleMessage(msg) {
   const user = ensureUser(msg.from);
 
   // Premium gate — applied to ALL incoming messages except SAP token binding.
-  // We allow recognizeToken() to run first so SAP owners can activate even if non-premium.
   const recogPreview = recognizeToken(text);
   const isSapBindingAttempt = recogPreview && recogPreview.tier === 'sap';
 
   if (!isAllowed(msg.from, user) && !isSapBindingAttempt) {
-    return await tgApi('sendMessage', { chat_id: chatId, text: PREMIUM_REFUSAL, parse_mode: 'Markdown', disable_web_page_preview: true });
+    return await tgSend(chatId, PREMIUM_REFUSAL);
   }
 
   // Commands
   if (text.startsWith('/')) {
     const parts = text.split(/\s+/);
     const cmd = parts[0].split('@')[0].toLowerCase();
-    if (cmd === '/start')    return await sendStart(chatId, user, msg.from.is_premium);
+    if (cmd === '/start')    return await sendStart(chatId, user);
     if (cmd === '/help')     return await sendHelp(chatId);
     if (cmd === '/projects') return await sendProjects(chatId, user);
     if (cmd === '/forget')   return await sendForgetMenu(chatId, user);
     if (cmd === '/new')      return await handleNew(chatId, user, parts.slice(1).join(' '));
     if (cmd === '/notif') {
       const arg = parts[1];
-      if (arg === 'off') { user.notif_subscribed = false; persistState(); return await tgApi('sendMessage',{chat_id:chatId,text:'🔕 Notifications off.'}); }
-      if (arg === 'on')  { user.notif_subscribed = true;  persistState(); return await tgApi('sendMessage',{chat_id:chatId,text:'🔔 Notifications on.'}); }
-      return await tgApi('sendMessage',{chat_id:chatId,text:'Usage: `/notif on` or `/notif off`\nCurrently: '+(user.notif_subscribed?'on':'off'), parse_mode:'Markdown'});
+      if (arg === 'off') { user.notif_subscribed = false; persistState(); return await tgSend(chatId, '🔕 Notifications off.'); }
+      if (arg === 'on')  { user.notif_subscribed = true;  persistState(); return await tgSend(chatId, '🔔 Notifications on.'); }
+      return await tgSend(chatId, 'Usage: <code>/notif on</code> or <code>/notif off</code>\nCurrently: '+(user.notif_subscribed?'on':'off'));
     }
-    return await tgApi('sendMessage',{chat_id:chatId,text:'Unknown command. Try /help'});
+    return await tgSend(chatId, 'Unknown command. Try /help');
   }
 
   // Token recognition
@@ -414,10 +417,9 @@ async function handleMessage(msg) {
   if (recog) {
     bindToken(msg.from.id, recog);
     let body = '✅ Recognized as ' + tierBadge(recog.tier);
-    if (recog.project) body += ' for `' + esc(recog.project.name) + '`';
+    if (recog.project) body += ' for <code>' + esc(recog.project.name) + '</code>';
     body += '.\n\nTap below to open the dashboard.';
-    return await tgApi('sendMessage', {
-      chat_id: chatId, text: body, parse_mode: 'Markdown',
+    return await tgSend(chatId, body, {
       reply_markup: { inline_keyboard: dashboardKeyboardForBinding({
         tier: recog.tier, token: recog.token, project_name: recog.project?.name,
       }) },
@@ -425,11 +427,9 @@ async function handleMessage(msg) {
   }
 
   // Unrecognized text → gentle hint
-  await tgApi('sendMessage', {
-    chat_id: chatId,
-    text: 'I didn\'t recognize that.\n\nTry /new to create a project, or paste a `pap_…` / `aap_…` token. /help for more.',
-    parse_mode: 'Markdown',
-  });
+  await tgSend(chatId,
+    'I didn\'t recognize that.\n\nTry /new to create a project, or paste a <code>pap_…</code> / <code>aap_…</code> token. /help for more.'
+  );
 }
 
 async function handleCallback(cq) {
@@ -437,7 +437,6 @@ async function handleCallback(cq) {
   const data = cq.data || '';
   const user = ensureUser(cq.from);
 
-  // Premium gate for callbacks too
   if (!isAllowed(cq.from, user)) {
     await tgApi('answerCallbackQuery', { callback_query_id: cq.id, text: 'Premium required', show_alert: true });
     return;
@@ -447,66 +446,61 @@ async function handleCallback(cq) {
     const tok = data.slice(7);
     const ok = unbindToken(cq.from.id, tok);
     await tgApi('answerCallbackQuery', { callback_query_id: cq.id, text: ok ? 'Forgotten.' : 'Not found.' });
-    if (ok) await tgApi('sendMessage', { chat_id: chatId, text: 'Binding removed.' });
+    if (ok) await tgSend(chatId, 'Binding removed.');
     return;
   }
   await tgApi('answerCallbackQuery', { callback_query_id: cq.id });
 }
 
-async function sendStart(chatId, user, isPremium) {
-  await tgApi('sendMessage', { chat_id: chatId, text: welcomeText(user, isPremium), parse_mode: 'Markdown', disable_web_page_preview: true });
+async function sendStart(chatId, user) {
+  await tgSend(chatId, welcomeText(user));
 }
 async function sendHelp(chatId) {
-  await tgApi('sendMessage', { chat_id: chatId, text: helpText(), parse_mode: 'Markdown' });
+  await tgSend(chatId, helpText());
 }
 async function sendProjects(chatId, user) {
   const text = projectsListText(user);
   const kb = (user?.bindings || []).slice(0, 8).flatMap(b => dashboardKeyboardForBinding(b));
-  await tgApi('sendMessage', {
-    chat_id: chatId, text, parse_mode: 'Markdown',
-    reply_markup: kb.length ? { inline_keyboard: kb } : undefined,
-  });
+  await tgSend(chatId, text, { reply_markup: kb.length ? { inline_keyboard: kb } : undefined });
 }
 async function sendForgetMenu(chatId, user) {
   if (!user || !user.bindings.length) {
-    return await tgApi('sendMessage', { chat_id: chatId, text: 'Nothing to forget.' });
+    return await tgSend(chatId, 'Nothing to forget.');
   }
   const kb = user.bindings.map(b => [{
     text: 'Forget ' + tierBadge(b.tier) + (b.project_name ? ' · ' + b.project_name : ''),
     callback_data: 'forget:' + b.token,
   }]);
-  await tgApi('sendMessage', { chat_id: chatId, text: 'Pick a binding to forget:', reply_markup: { inline_keyboard: kb } });
+  await tgSend(chatId, 'Pick a binding to forget:', { reply_markup: { inline_keyboard: kb } });
 }
 
 // /new — anyone (premium) can create a project. They become its owner (PAP).
 async function handleNew(chatId, user, requestedName) {
   if (!serverHelpers.createProject) {
-    return await tgApi('sendMessage',{chat_id:chatId,text:'Internal error: createProject not wired'});
+    return await tgSend(chatId, 'Internal error: createProject not wired');
   }
-  // Resolve project name. If user provided one, use it (sanitized). Else generate.
   let name = String(requestedName || '').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,40);
   if (!name) {
-    name = 'pad_' + crypto.randomBytes(3).toString('hex');
+    name = 'pad-' + crypto.randomBytes(3).toString('hex'); // dash instead of underscore for safer URLs in chat
   }
   const owner = user.tg_username || user.first_name || ('user_' + user.tg_user_id);
   try {
     const res = await serverHelpers.createProject({ name, description: 'Created via Telepath by ' + owner });
     bindToken(user.tg_user_id, { tier: 'pap', token: res.pap_token, project: { name: res.project } });
-    await tgApi('sendMessage', {
-      chat_id: chatId,
-      text: '🎉 Project `' + esc(res.project) + '` is yours.\n\n' +
-            'Live URL: ' + res.live_url + '\n\n' +
-            'Tap below to open the dashboard, then start building by talking to Claude.',
-      parse_mode: 'Markdown',
+    const html =
+      '🎉 Project <code>' + esc(res.project) + '</code> is yours.\n\n' +
+      'Live URL: <a href="' + esc(res.live_url) + '">' + esc(res.live_url) + '</a>\n\n' +
+      'Tap below to open the dashboard, then start building by talking to Claude.';
+    await tgSend(chatId, html, {
       reply_markup: { inline_keyboard: dashboardKeyboardForBinding({ tier: 'pap', token: res.pap_token, project_name: res.project }) },
     });
-    notifySAPOwners(`🆕 New project via /new: \`${esc(res.project)}\` by ${esc(owner)}`);
+    notifySAPOwners(`🆕 New project via /new: <code>${esc(res.project)}</code> by ${esc(owner)}`);
   } catch (e) {
-    let msg = 'Failed: ' + e.message;
-    if (e.message === 'exists') msg = 'A project with that name already exists. Try a different name: /new my-name';
-    if (e.message === 'reserved_name') msg = 'That name is reserved by the system. Try another: /new my-name';
-    if (e.message === 'invalid_name') msg = 'Invalid name. Use only lowercase letters, digits, `-`, `_` (max 40).';
-    await tgApi('sendMessage', { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
+    let msg = 'Failed: ' + esc(e.message);
+    if (e.message === 'exists') msg = 'A project with that name already exists. Try a different name: <code>/new my-name</code>';
+    if (e.message === 'reserved_name') msg = 'That name is reserved by the system. Try another: <code>/new my-name</code>';
+    if (e.message === 'invalid_name') msg = 'Invalid name. Use only lowercase letters, digits, <code>-</code>, <code>_</code> (max 40).';
+    await tgSend(chatId, msg);
   }
 }
 
@@ -553,7 +547,6 @@ async function refreshBotMe() {
   }
 }
 
-// Configure bot commands & description in Telegram (called on TAP install)
 async function configureBotProfile() {
   if (!TAP || !TAP.token) return;
   const commands = [
@@ -582,41 +575,39 @@ async function configureBotProfile() {
 // ─────────────────────────────────────────────────────────────
 // Notification dispatchers
 // ─────────────────────────────────────────────────────────────
-function notifySAPOwners(text) {
+function notifySAPOwners(html) {
   if (!TAP) return;
   const subs = findUsersBoundToTier('sap').filter(u => u.notif_subscribed);
   for (const u of subs) {
-    tgApi('sendMessage', { chat_id: u.tg_user_id, text, parse_mode: 'Markdown', disable_web_page_preview: true })
-      .catch(e => console.error('[telepath] notify SAP failed:', e.message));
+    tgSend(u.tg_user_id, html).catch(e => console.error('[telepath] notify SAP failed:', e.message));
   }
 }
 
-function notifyPAPOwners(projectName, text) {
+function notifyPAPOwners(projectName, html) {
   if (!TAP) return;
   const subs = Object.values(telepathState.users).filter(u =>
     u.notif_subscribed && u.bindings.some(b => b.tier === 'pap' && b.project_name === projectName)
   );
   for (const u of subs) {
-    tgApi('sendMessage', { chat_id: u.tg_user_id, text, parse_mode: 'Markdown', disable_web_page_preview: true })
-      .catch(e => console.error('[telepath] notify PAP failed:', e.message));
+    tgSend(u.tg_user_id, html).catch(e => console.error('[telepath] notify PAP failed:', e.message));
   }
 }
 
 function onNewProject(project) {
   if (!telepathState.settings.notify_sap_on_new_project) return;
-  notifySAPOwners(`🆕 New project: \`${esc(project.name)}\``);
+  notifySAPOwners(`🆕 New project: <code>${esc(project.name)}</code>`);
 }
 function onNewAAPCreated(project, aap) {
-  notifyPAPOwners(project.name, `🤝 New agent for \`${esc(project.name)}\`: ${esc(aap.name || aap.id)}`);
+  notifyPAPOwners(project.name, `🤝 New agent for <code>${esc(project.name)}</code>: ${esc(aap.name || aap.id)}`);
 }
 function onAAPMerged(project, aap, versionN) {
   if (!telepathState.settings.notify_pap_on_aap_merge) return;
-  notifyPAPOwners(project.name, `✅ Agent ${esc(aap.name || aap.id)} merged into \`${esc(project.name)}\`. New version: v${versionN}`);
+  notifyPAPOwners(project.name, `✅ Agent ${esc(aap.name || aap.id)} merged into <code>${esc(project.name)}</code>. New version: v${versionN}`);
 }
 function onMainCommit(project, commit, versionN) {
   if (!telepathState.settings.notify_pap_on_main_commit) return;
   const msg = (commit?.summary?.changes || commit?.commit || '').toString().slice(0, 80);
-  notifyPAPOwners(project.name, `📝 \`${esc(project.name)}\` v${versionN}: ${esc(msg || 'commit')}`);
+  notifyPAPOwners(project.name, `📝 <code>${esc(project.name)}</code> v${versionN}: ${esc(msg || 'commit')}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -665,18 +656,15 @@ function mountRoutes(app) {
     res.json({ ok: true, settings: telepathState.settings });
   });
 
-  // Re-run setMyCommands etc. on demand (useful after editing the list)
   app.post('/drafts/tap/configure', requireSAP, async (req, res) => {
     try { await configureBotProfile(); res.json({ ok: true }); }
     catch (e) { res.status(500).json({ ok: false, error: e.message }); }
   });
 
-  // WebApp pages
   app.get('/telepath/app/sap',           (req, res) => res.type('html').send(renderWebAppShell('sap')));
   app.get('/telepath/app/pap/:token',    (req, res) => res.type('html').send(renderWebAppShell('pap', req.params.token)));
   app.get('/telepath/app/aap/:token',    (req, res) => res.type('html').send(renderWebAppShell('aap', req.params.token)));
 
-  // WebApp API
   app.post('/telepath/api/whoami', initDataAuth, (req, res) => {
     res.json({ ok: true, tg_user: req.tgUser });
   });
@@ -779,7 +767,7 @@ function initDataAuth(req, res, next) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// WebApp shell HTML
+// WebApp shell HTML (unchanged from v0.4.1)
 // ─────────────────────────────────────────────────────────────
 function renderWebAppShell(tier, token) {
   const stateUrl = '/telepath/api/state/' + tier + (token ? '/' + token : '');
@@ -811,7 +799,6 @@ input, textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px s
 .proj-meta { font-size:12px; color: var(--tg-theme-hint-color, #888); margin-top:2px; }
 .empty { padding: 24px 0; text-align:center; color: var(--tg-theme-hint-color, #888); }
 .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#222; color:#fff; padding:10px 16px; border-radius:8px; font-size:13px; z-index:100; }
-.copy-btn { font-size:11px; padding:3px 8px; border-radius:5px; background:rgba(96,165,250,0.15); color:#60a5fa; border:none; cursor:pointer; font-family:inherit; margin-left:6px; }
 </style>
 </head><body><div class="wrap" id="root">
   <div class="empty">Loading…</div>
@@ -954,7 +941,7 @@ export function initTelepath(opts) {
   loadTAP();
   if (TAP && TAP.token) {
     refreshBotMe().then(() => {
-      configureBotProfile().catch(()=>{}); // refresh commands on startup
+      configureBotProfile().catch(()=>{});
       pollLoop();
     });
     if (botMeRefreshTimer) clearInterval(botMeRefreshTimer);
