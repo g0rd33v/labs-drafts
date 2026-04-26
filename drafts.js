@@ -1,4 +1,9 @@
-// drafts v0.7 — Three-tier access model + Telepath + Project Bots + Per-project analytics.
+// drafts v0.8 — Three-tier access model + Telepath + Project Bots + Per-project analytics + SAP drafts-event notifications.
+//
+// v0.8 adds:
+//   - SAP-event notifications (boot, version bump, schema migration, errors) via telepathHooks
+//   - Persisted last_known_version in state for version-bump detection
+//   - GitHub auto-sync setting per project (auto-pushes to GitHub on every commit)
 //
 // Public URL scheme:
 //   /<n>/                     -> live
@@ -8,14 +13,6 @@
 //   /drafts/pass/<token>         -> welcome (SAP/PAP/AAP)
 //   /drafts/...                  -> API
 //   /telepath/app/{sap|pap|aap}  -> Telegram WebApp dashboards
-//
-// Tiers:
-//   SAP — server root
-//   PAP — project owner
-//   AAP — contributor
-//   TAP — Telegram bot pass (set by SAP, attaches a bot to this server)
-//   PBOT — per-project bot (set by PAP via WebApp, two modes: default or webhook,
-//          plus automatic privacy-respecting analytics)
 //
 // Spec & registry: https://github.com/g0rd33v/drafts-protocol
 
@@ -32,7 +29,7 @@ import { initTelepath, mountTelepathRoutes, hooks as telepathHooks, getTelepathS
 import { initProjectBots } from "./project-bots.js";
 import { startDailySnapshotScheduler } from "./analytics.js";
 
-const VERSION = '0.7';
+const VERSION = '0.8';
 
 // Config: try /etc/labs/drafts.env first (production), then ./drafts.env (dev), then legacy
 const ENV_CANDIDATES = ['/etc/labs/drafts.env', './drafts.env', '/opt/drafts-receiver/.env'];
@@ -107,9 +104,32 @@ function migrateProjectBotsToV06() {
   if (changed > 0) {
     saveState();
     console.log(`[drafts] migrated ${changed} bot field(s) to v0.6 schema`);
+    setTimeout(() => { try { telepathHooks.onSchemaMigration(`v0.6 bot schema: ${changed} field(s) added`); } catch (e) {} }, 5000);
   }
 }
 migrateProjectBotsToV06();
+
+// v0.8 migration: ensure github_autosync field on each project (default false)
+function migrateProjectsToV08() {
+  let changed = 0;
+  for (const p of state.projects) {
+    if (!('github_autosync' in p)) { p.github_autosync = false; changed++; }
+  }
+  if (changed > 0) {
+    saveState();
+    console.log(`[drafts] migrated ${changed} project(s) to v0.8 schema (github_autosync default false)`);
+    setTimeout(() => { try { telepathHooks.onSchemaMigration(`v0.8 schema: ${changed} project(s) got github_autosync field`); } catch (e) {} }, 5000);
+  }
+}
+migrateProjectsToV08();
+
+// v0.8: detect version change vs persisted last_known_version (drafts schedules notify after Telepath ready)
+const previousVersion = state.last_known_version || null;
+const isVersionBump = previousVersion && previousVersion !== VERSION;
+const isFirstBoot = !previousVersion;
+state.last_known_version = VERSION;
+state.last_boot_at = new Date().toISOString();
+saveState();
 
 const TIER_BYTES = { sap: 8, pap: 6, aap: 5 };
 const newToken   = (prefix) => prefix + '_' + crypto.randomBytes(TIER_BYTES[prefix] || 6).toString('hex');
@@ -143,13 +163,30 @@ function resolveGithubConfig(project) {
   return null;
 }
 
+// Internal: push a project's main branch to GitHub (used by /github/sync and autosync)
+async function _githubSyncProject(project) {
+  if (!project.github_repo) throw new Error('project_not_linked_to_github');
+  const gh = resolveGithubConfig(project);
+  if (!gh) throw new Error('github_not_configured');
+  const pp = await ensureProjectDirs(project.name);
+  const git = simpleGit(pp.drafts);
+  await switchToBranch(git, 'main');
+  const remoteUrl = `https://${gh.user}:${gh.token}@github.com/${project.github_repo}.git`;
+  const remotes = await git.getRemotes();
+  if (!remotes.find(r => r.name === 'origin')) await git.addRemote('origin', remoteUrl);
+  else await git.remote(['set-url', 'origin', remoteUrl]);
+  await git.push(['-u', 'origin', 'main', '--force']);
+  await git.remote(['set-url', 'origin', `https://github.com/${project.github_repo}.git`]);
+  return { pushed_to: project.github_repo, config_source: gh.source };
+}
+
 async function _createProjectInternal({ name, description = '', github_repo = null, pap_name = null }) {
   name = sanitizeName(name);
   if (!name) throw new Error('invalid_name');
   if (isReservedName(name)) throw new Error('reserved_name');
   if (findProjectByName(name)) throw new Error('exists');
   const pap = { id: newId(), token: newToken('pap'), name: pap_name, created_at: now(), revoked: false };
-  const proj = { name, description, github_repo, created_at: now(), pap, aaps: [] };
+  const proj = { name, description, github_repo, github_autosync: false, created_at: now(), pap, aaps: [] };
   state.projects.push(proj);
   saveState();
   await ensureProjectDirs(name);
@@ -400,6 +437,7 @@ app.get('/drafts/health', (req, res) => {
   const projectBotsCount = state.projects.filter(p => p.bot && p.bot.token).length;
   const webhookBotsCount = state.projects.filter(p => p.bot && p.bot.token && p.bot.webhook_url).length;
   const analyticsEnabledCount = state.projects.filter(p => p.bot && p.bot.token && p.bot.analytics_enabled !== false).length;
+  const githubAutosyncCount = state.projects.filter(p => p.github_autosync).length;
   res.json({
     ok: true,
     version: VERSION,
@@ -407,11 +445,11 @@ app.get('/drafts/health', (req, res) => {
     server_number: SERVER_NUMBER,
     telepath: tp,
     project_bots: { total: projectBotsCount, in_webhook_mode: webhookBotsCount, analytics_enabled: analyticsEnabledCount },
+    github_autosync_enabled: githubAutosyncCount,
     uptime_sec: Math.floor(process.uptime()),
   });
 });
 
-// Mount Telepath routes (TAP management + WebApp + Telepath API + Project Bots API + Analytics API).
 mountTelepathRoutes(app);
 
 function renderPage({ tier, token, project, aap, versions = [] }) {
@@ -460,7 +498,7 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     on_first_load: { summary: project ? `Check ${apiBase}/project/info + files + history and greet based on state.` : 'Greet warmly, offer overview.' },
     transport: 'Try built-in HTTP tools first; on failure switch to Claude for Chrome silently.',
     capabilities: isSAP ? ['list_projects','create_project','delete_project','revoke_passes','configure_github_default','manage_telepath_bot']
-      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','attach_telegram_bot','set_bot_webhook_url','view_bot_analytics']
+      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','github_autosync','attach_telegram_bot','set_bot_webhook_url','view_bot_analytics']
       : ['build_in_branch','read_live','read_history'],
     endpoints: isSAP ? [
       { method: 'GET', path: '/projects' },
@@ -643,6 +681,7 @@ app.get('/drafts/server/stats', authSAP, (req, res) => {
       bot_attached: !!(p.bot && p.bot.token),
       bot_mode: p.bot && p.bot.token ? (p.bot.webhook_url ? 'webhook' : 'default') : null,
       analytics_enabled: p.bot && p.bot.token ? (p.bot.analytics_enabled !== false) : null,
+      github_autosync: !!p.github_autosync,
     })),
   });
 });
@@ -651,7 +690,7 @@ app.get('/drafts/projects', authSAP, (req, res) => {
   res.json({
     ok: true,
     projects: state.projects.map(p => ({
-      name: p.name, description: p.description, github_repo: p.github_repo,
+      name: p.name, description: p.description, github_repo: p.github_repo, github_autosync: !!p.github_autosync,
       created_at: p.created_at, live_url: `${PUBLIC_BASE}/${p.name}/`,
       pap: p.pap ? { id: p.pap.id, revoked: p.pap.revoked, activation_url: `${PUBLIC_BASE}/drafts/pass/drafts_project_${SERVER_NUMBER}_${p.pap.token.replace(/^pap_/,'')}` } : null,
       aaps: (p.aaps || []).map(a => ({ id: a.id, name: a.name, revoked: a.revoked })),
@@ -703,7 +742,7 @@ app.get('/drafts/project/info', authAny, (req, res) => {
   const p = req.project;
   if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
   res.json({
-    ok: true, project: p.name, description: p.description, github_repo: p.github_repo,
+    ok: true, project: p.name, description: p.description, github_repo: p.github_repo, github_autosync: !!p.github_autosync,
     created_at: p.created_at, live_url: `${PUBLIC_BASE}/${p.name}/`, viewer_tier: req.tier,
     bot_attached: !!(p.bot && p.bot.token),
     bot_username: p.bot?.bot_username || null,
@@ -729,6 +768,7 @@ app.get('/drafts/project/stats', authPAPorSAP, async (req, res) => {
       recent_commits: log.all.map(c => ({ hash: c.hash.slice(0,7), message: c.message, date: c.date })),
       live_files_count: liveFiles.length,
       versions: { count: versions.length, latest: versions[versions.length - 1] || null, all: versions },
+      github_autosync: !!p.github_autosync,
       bot: p.bot ? {
         bot_username: p.bot.bot_username,
         subscribers: (p.bot.subscribers || []).length,
@@ -840,6 +880,10 @@ app.post('/drafts/merge', authPAPorSAP, async (req, res) => {
     await git.merge([`aap/${aap.id}`, '--no-ff', '-m', `merge aap/${aap.name || aap.id}`]);
     const N = await materializeVersion(p.name);
     try { telepathHooks.onAAPMerged(p, aap, N); } catch (e) {}
+    // v0.8 autosync
+    if (p.github_autosync && p.github_repo) {
+      _githubSyncProject(p).catch(e => console.error('[autosync after merge] failed:', e.message));
+    }
     res.json({ ok: true, merged: aap.id, branch: `aap/${aap.id}`, version: N, version_url: `${PUBLIC_BASE}/${p.name}/v/${N}/` });
   } catch (e) {
     res.status(500).json({ ok: false, error: 'merge_failed', detail: e.message });
@@ -883,6 +927,10 @@ app.post('/drafts/commit', authAny, async (req, res) => {
       const N = await materializeVersion(p.name);
       versionInfo = { n: N, url: `${PUBLIC_BASE}/${p.name}/v/${N}/` };
       try { telepathHooks.onMainCommit(p, { commit: out.commit, summary: out.summary, message: msg }, N); } catch (e) {}
+      // v0.8 autosync (fire and forget)
+      if (p.github_autosync && p.github_repo) {
+        _githubSyncProject(p).catch(e => console.error('[autosync after commit] failed:', e.message));
+      }
     }
     res.json({ ok: true, branch, commit: out.commit, summary: out.summary, version: versionInfo });
   } catch (e) {
@@ -1057,23 +1105,36 @@ app.delete('/drafts/projects/:name/config/github', authPAPorSAP, (req, res) => {
 app.post('/drafts/github/sync', authPAPorSAP, async (req, res) => {
   const p = req.project || findProjectByName(sanitizeName(req.body.project || ''));
   if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
-  if (!p.github_repo) return res.status(400).json({ ok: false, error: 'project_not_linked_to_github' });
-  const gh = resolveGithubConfig(p);
-  if (!gh) return res.status(500).json({ ok: false, error: 'github_not_configured' });
-  const pp = await ensureProjectDirs(p.name);
-  const git = simpleGit(pp.drafts);
   try {
-    await switchToBranch(git, 'main');
-    const remoteUrl = `https://${gh.user}:${gh.token}@github.com/${p.github_repo}.git`;
-    const remotes = await git.getRemotes();
-    if (!remotes.find(r => r.name === 'origin')) await git.addRemote('origin', remoteUrl);
-    else await git.remote(['set-url', 'origin', remoteUrl]);
-    await git.push(['-u', 'origin', 'main', '--force']);
-    await git.remote(['set-url', 'origin', `https://github.com/${p.github_repo}.git`]);
-    res.json({ ok: true, pushed_to: p.github_repo, config_source: gh.source });
+    const out = await _githubSyncProject(p);
+    res.json({ ok: true, ...out });
   } catch (e) {
-    res.status(500).json({ ok: false, error: 'github_sync_failed', detail: e.message });
+    const status = (e.message === 'project_not_linked_to_github' || e.message === 'github_not_configured') ? 400 : 500;
+    res.status(status).json({ ok: false, error: e.message });
   }
+});
+
+// v0.8: per-project github autosync toggle
+app.put('/drafts/projects/:name/github_autosync', authPAPorSAP, (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.params.name));
+  if (!p) return res.status(404).json({ ok: false, error: 'project_not_found' });
+  if (!p.github_repo) return res.status(400).json({ ok: false, error: 'project_not_linked_to_github' });
+  const enabled = req.body.enabled !== false;
+  p.github_autosync = !!enabled;
+  saveState();
+  res.json({ ok: true, github_autosync: p.github_autosync });
+});
+
+// v0.8: link/unlink github repo for a project (PAP can also do this — needs repo full name)
+app.put('/drafts/projects/:name/github_repo', authPAPorSAP, (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.params.name));
+  if (!p) return res.status(404).json({ ok: false, error: 'project_not_found' });
+  const repo = String(req.body.github_repo || '').trim();
+  if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) return res.status(400).json({ ok: false, error: 'bad_repo_format', detail: 'expected owner/repo' });
+  p.github_repo = repo || null;
+  if (!p.github_repo) p.github_autosync = false;
+  saveState();
+  res.json({ ok: true, github_repo: p.github_repo, github_autosync: !!p.github_autosync });
 });
 
 // Public project routes — must come AFTER all /drafts/* and /telepath/* routes
@@ -1131,6 +1192,7 @@ app.listen(PORT, '127.0.0.1', () => {
     serverHelpers: {
       createProject: _createProjectInternal,
       createAAP: _createAAPInternal,
+      githubSyncProject: _githubSyncProject,
     },
   });
 
@@ -1141,6 +1203,24 @@ app.listen(PORT, '127.0.0.1', () => {
     findProjectByName,
   });
 
-  // Daily snapshot scheduler — writes summary to .analytics-daily/<date>.json at midnight UTC
+  // Daily snapshot scheduler
   startDailySnapshotScheduler(() => state, DRAFTS_DIR);
+
+  // v0.8: SAP boot/version-bump notifications (after 8s so Telepath has time to load polling+hooks)
+  setTimeout(() => {
+    try {
+      const projectCount = state.projects.length;
+      const botCount = state.projects.filter(p => p.bot && p.bot.token).length;
+      const uptime = Math.floor(process.uptime());
+      if (isVersionBump) {
+        telepathHooks.onVersionBump(previousVersion, VERSION, { projectCount, botCount });
+      } else if (isFirstBoot) {
+        telepathHooks.onDraftsBoot(VERSION, { projectCount, botCount, uptime, firstBoot: true });
+      } else {
+        telepathHooks.onDraftsBoot(VERSION, { projectCount, botCount, uptime, firstBoot: false });
+      }
+    } catch (e) {
+      console.error('[drafts] boot hook error:', e.message);
+    }
+  }, 8000);
 });
