@@ -1,12 +1,16 @@
 // telepath.js — Drafts Telepath: control-plane Telegram bot for Drafts servers.
 //
-// v0.6: webhook forwarder mode. Each PAP project can attach a Telegram bot
-// that operates in one of two modes:
-//   - default mode: built-in /start, /stop, broadcast (v0.5 behavior)
-//   - webhook mode: Telegram updates forwarded to user's URL (Vercel/CF/etc)
-//
-// The PAP WebApp dashboard now includes a webhook URL input and a viewer
-// for the last 20 forward calls (status code, latency, error).
+// v0.7: Per-project bot analytics.
+//   New endpoints:
+//     GET    /telepath/api/pap/analytics/summary      — JSON summary for dashboard
+//     GET    /telepath/api/pap/analytics/log          — download .jsonl event log
+//     GET    /telepath/api/pap/analytics/summary-raw  — download full summary.json
+//     GET    /telepath/api/pap/analytics/archives     — list rotated logs
+//     GET    /telepath/api/pap/analytics/archive      — download specific archive
+//     DELETE /telepath/api/pap/analytics              — wipe analytics data
+//     PATCH  /telepath/api/pap/analytics              — toggle analytics_enabled
+//   New WebApp card: 📊 analytics with live numbers, top languages/countries,
+//   hourly heatmap, download/wipe buttons.
 
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -14,6 +18,15 @@ import path from 'path';
 import crypto from 'crypto';
 import https from 'https';
 import { projectBotsApi } from './project-bots.js';
+import {
+  getSummary as analyticsGetSummary,
+  getLogStream as analyticsGetLogStream,
+  getLogStats as analyticsGetLogStats,
+  getSummaryRaw as analyticsGetSummaryRaw,
+  listArchives as analyticsListArchives,
+  getArchiveStream as analyticsGetArchiveStream,
+  wipeAnalytics as analyticsWipe,
+} from './analytics.js';
 
 // ─────────────────────────────────────────────────────────────
 // Config
@@ -888,7 +901,6 @@ function mountRoutes(app) {
     res.json({ ok: true, bot: projectBotsApi.getBotStatus(p) });
   });
 
-  // PUT bot — install (now also accepts optional webhook_url for one-shot install + webhook setup)
   app.put('/telepath/api/pap/bot', initDataAuth, async (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -916,14 +928,12 @@ function mountRoutes(app) {
     }
   });
 
-  // PATCH webhook — set/clear/change webhook URL without re-installing
   app.patch('/telepath/api/pap/bot/webhook', initDataAuth, async (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
     if (!p.bot || !p.bot.token) return res.status(400).json({ ok: false, error: 'no_bot_installed' });
     const url = req.body.webhook_url;
     try {
-      // url === null or "" → clear; otherwise validate & set
       const out = await projectBotsApi.setWebhookUrl(p, url == null || url === '' ? null : String(url).trim());
       res.json({ ok: true, ...out });
     } catch (e) {
@@ -945,6 +955,87 @@ function mountRoutes(app) {
     }
     try {
       const out = await projectBotsApi.syncBot(p, html);
+      res.json({ ok: true, ...out });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // ── Analytics endpoints (v0.7) ──
+
+  // Toggle analytics_enabled on/off
+  app.patch('/telepath/api/pap/bot/analytics', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    if (!p.bot || !p.bot.token) return res.status(400).json({ ok: false, error: 'no_bot_installed' });
+    try {
+      const out = projectBotsApi.setAnalyticsEnabled(p, !!req.body.enabled);
+      res.json({ ok: true, ...out });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // GET summary for the dashboard
+  app.get('/telepath/api/pap/analytics/summary', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    try {
+      const summary = analyticsGetSummary(p.name, DRAFTS_DIR);
+      const logStats = analyticsGetLogStats(p.name, DRAFTS_DIR);
+      res.json({ ok: true, summary, log: logStats });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Download .jsonl event log
+  app.get('/telepath/api/pap/analytics/log', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    const stream = analyticsGetLogStream(p.name, DRAFTS_DIR);
+    if (!stream) return res.status(404).json({ ok: false, error: 'no_log_yet' });
+    res.set('Content-Type', 'application/jsonlines; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${p.name}-analytics-${new Date().toISOString().slice(0,10)}.jsonl"`);
+    stream.pipe(res);
+  });
+
+  // Download summary.json (full raw, including users dict)
+  app.get('/telepath/api/pap/analytics/summary-raw', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    const stream = analyticsGetSummaryRaw(p.name, DRAFTS_DIR);
+    if (!stream) return res.status(404).json({ ok: false, error: 'no_summary_yet' });
+    res.set('Content-Type', 'application/json; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${p.name}-summary-${new Date().toISOString().slice(0,10)}.json"`);
+    stream.pipe(res);
+  });
+
+  // List archived (rotated) logs
+  app.get('/telepath/api/pap/analytics/archives', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    res.json({ ok: true, archives: analyticsListArchives(p.name, DRAFTS_DIR) });
+  });
+
+  // Download specific archive by name
+  app.get('/telepath/api/pap/analytics/archive', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    const name = String(req.query.name || '');
+    const stream = analyticsGetArchiveStream(p.name, DRAFTS_DIR, name);
+    if (!stream) return res.status(404).json({ ok: false, error: 'archive_not_found' });
+    res.set('Content-Type', 'application/jsonlines; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${p.name}-${name.replace(/^\./, '')}"`);
+    stream.pipe(res);
+  });
+
+  // Wipe analytics
+  app.delete('/telepath/api/pap/analytics', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    try {
+      const out = analyticsWipe(p.name, DRAFTS_DIR);
       res.json({ ok: true, ...out });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
@@ -972,7 +1063,7 @@ function initDataAuth(req, res, next) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// WebApp shell HTML — Gen Z'd, with v0.6 webhook section
+// WebApp shell HTML — Gen Z'd, with v0.7 analytics card
 // ─────────────────────────────────────────────────────────────
 function renderWebAppShell(tier, token) {
   const stateUrl = '/telepath/api/state/' + tier + (token ? '/' + token : '');
@@ -1026,6 +1117,29 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 .log-status.err { color:#ef4444; }
 .log-time { color:#888; }
 .divider { height:1px; background:rgba(255,255,255,0.06); margin:14px 0; }
+
+/* Analytics-specific */
+.metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:6px 0 14px; }
+.metric { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.04); border-radius:10px; padding:12px 14px; }
+.metric .num { font-size:22px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
+.metric .lbl { font-size:11px; color:#888; margin-top:4px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700; }
+.metric.green .num { color:#4ade80; }
+.metric.purple .num { color:#a78bfa; }
+.metric.blue .num { color:#60a5fa; }
+.metric.orange .num { color:#fb923c; }
+.bars { display:flex; gap:2px; align-items:flex-end; height:42px; padding:6px 0 0; }
+.bars .bar { flex:1; background:#a78bfa; border-radius:1px 1px 0 0; min-height:1px; opacity:0.85; }
+.bars .bar:hover { opacity:1; }
+.lang-row { display:flex; align-items:center; padding:5px 0; font-size:12.5px; gap:8px; }
+.lang-row .l { font-family:ui-monospace, Menlo, monospace; min-width:42px; color:#a8a8a8; }
+.lang-row .meter { flex:1; height:6px; background:rgba(255,255,255,0.05); border-radius:99px; overflow:hidden; }
+.lang-row .meter > span { display:block; height:100%; background:#60a5fa; border-radius:99px; }
+.lang-row .n { font-family:ui-monospace, Menlo, monospace; color:#888; font-size:11.5px; min-width:34px; text-align:right; }
+.toggle-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; }
+.toggle { position:relative; width:42px; height:24px; background:#333; border-radius:99px; cursor:pointer; transition:background 0.15s; flex-shrink:0; }
+.toggle.on { background:#4ade80; }
+.toggle::after { content:''; position:absolute; left:3px; top:3px; width:18px; height:18px; background:#fff; border-radius:50%; transition:left 0.15s; }
+.toggle.on::after { left:21px; }
 </style>
 </head><body><div class="wrap" id="root"><div class="empty">loading…</div></div>
 <script>
@@ -1049,6 +1163,18 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     if (s < 86400) return Math.floor(s/3600) + 'h ago';
     return Math.floor(s/86400) + 'd ago';
   }
+  function fmtBytes(b) {
+    if (!b) return '0';
+    if (b < 1024) return b + ' B';
+    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+    return (b/(1024*1024)).toFixed(1) + ' MB';
+  }
+  function fmtNum(n) {
+    if (n == null) return '0';
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n/1000).toFixed(1) + 'k';
+    return String(n);
+  }
 
   async function api(method, url, body) {
     const opts = { method, headers: { 'Content-Type':'application/json', 'X-Telegram-Init-Data': initData } };
@@ -1057,6 +1183,23 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     const j = await r.json().catch(()=>({ok:false,error:'bad_json'}));
     if (!j.ok) throw new Error(j.error || 'request_failed');
     return j;
+  }
+
+  // Authenticated download via blob (initData header required)
+  async function downloadAuth(url, filename) {
+    const r = await fetch(url, { headers: { 'X-Telegram-Init-Data': initData } });
+    if (!r.ok) {
+      const j = await r.json().catch(()=>({error:'failed'}));
+      throw new Error(j.error || 'download_failed');
+    }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    const objUrl = URL.createObjectURL(blob);
+    a.href = objUrl;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(objUrl); a.remove(); }, 200);
   }
 
   async function load(){
@@ -1144,7 +1287,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
         h += '<button class="btn ghost" id="webhookSaveBtn">↻ update url</button>';
         h += '<button class="btn danger" id="webhookClearBtn">switch to default mode</button>';
         h += '</div>';
-        // Log table
         if ((p.bot.webhook_log || []).length) {
           h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 6px">recent calls</div>';
           h += '<table class="log-table">';
@@ -1190,6 +1332,13 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     }
     h += '</div>';
 
+    // Analytics card (only when bot installed)
+    if (p.bot.installed) {
+      h += '<div class="card" id="analyticsCard"><h3>📊 analytics</h3>';
+      h += '<div id="analyticsBody"><div class="empty">loading…</div></div>';
+      h += '</div>';
+    }
+
     // Agents
     h += '<div class="card"><h3>agents · '+p.aaps.length+'</h3>';
     if (!p.aaps.length) h += '<div class="empty">no agents yet</div>';
@@ -1231,7 +1380,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
           setTimeout(load, 500);
         } catch (e) { toast('failed: '+e.message); }
       });
-      // Webhook controls (present in both modes)
       const wsBtn = document.getElementById('webhookSaveBtn');
       if (wsBtn) {
         wsBtn.addEventListener('click', async () => {
@@ -1255,6 +1403,8 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
           } catch (e) { toast('failed: '+e.message); }
         });
       }
+      // Load analytics asynchronously so dashboard shows fast
+      loadAnalytics(p.bot.analytics_enabled !== false);
     } else {
       document.getElementById('linkBtn').addEventListener('click', async () => {
         const token = document.getElementById('botToken').value.trim();
@@ -1269,6 +1419,158 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
         } catch (e) { toast('failed: '+e.message); }
       });
     }
+  }
+
+  async function loadAnalytics(enabled) {
+    const body = document.getElementById('analyticsBody');
+    if (!body) return;
+    try {
+      const r = await api('GET', '/telepath/api/pap/analytics/summary?pap_token=' + encodeURIComponent(TOKEN));
+      renderAnalytics(body, r.summary, r.log, enabled);
+    } catch (e) {
+      body.innerHTML = '<div class="muted">analytics unavailable: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function renderAnalytics(body, s, log, enabled) {
+    let h = '';
+
+    // Toggle row
+    h += '<div class="toggle-row">';
+    h += '<div><div style="font-size:13.5px;font-weight:600">recording '+(enabled ? 'on' : 'off')+'</div>';
+    h += '<div class="muted">privacy-safe metadata only — never raw text</div></div>';
+    h += '<div class="toggle '+(enabled?'on':'')+'" id="analyticsToggle"></div>';
+    h += '</div>';
+
+    if (s.events_total === 0) {
+      h += '<div class="empty" style="padding:18px 0">no events yet — write to your bot to start tracking</div>';
+      body.innerHTML = h;
+      document.getElementById('analyticsToggle').addEventListener('click', toggleAnalytics);
+      return;
+    }
+
+    h += '<div class="divider"></div>';
+
+    // Top metrics grid
+    h += '<div class="metric-grid">';
+    h += '<div class="metric blue"><div class="num">' + fmtNum(s.users_total) + '</div><div class="lbl">users total</div></div>';
+    h += '<div class="metric green"><div class="num">' + fmtNum(s.events_total) + '</div><div class="lbl">events total</div></div>';
+    h += '<div class="metric purple"><div class="num">' + s.users_active_7d + '</div><div class="lbl">DAU 7d</div></div>';
+    h += '<div class="metric orange"><div class="num">' + s.premium_pct + '%</div><div class="lbl">premium</div></div>';
+    h += '</div>';
+
+    // Daily activity chart (last 30 days)
+    const dayKeys = Object.keys(s.by_day).sort();
+    if (dayKeys.length > 1) {
+      const last30 = dayKeys.slice(-30);
+      const max = Math.max(...last30.map(k => s.by_day[k]));
+      h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:10px 0 4px">events · last ' + last30.length + ' days</div>';
+      h += '<div class="bars">';
+      for (const k of last30) {
+        const v = s.by_day[k];
+        const pct = max > 0 ? Math.max(2, (v / max) * 100) : 0;
+        h += '<div class="bar" style="height:' + pct + '%" title="' + k + ': ' + v + '"></div>';
+      }
+      h += '</div>';
+    }
+
+    // Hourly heatmap
+    const hMax = Math.max(...s.by_hour_utc);
+    if (hMax > 0) {
+      h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">activity by hour (UTC)</div>';
+      h += '<div class="bars">';
+      for (let i = 0; i < 24; i++) {
+        const v = s.by_hour_utc[i];
+        const pct = hMax > 0 ? Math.max(2, (v / hMax) * 100) : 0;
+        h += '<div class="bar" style="height:' + pct + '%;background:#60a5fa" title="' + i + ':00 UTC: ' + v + '"></div>';
+      }
+      h += '</div>';
+    }
+
+    // Top languages
+    if (s.top_languages && s.top_languages.length) {
+      h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">top languages</div>';
+      const total = s.top_languages.reduce((a, [, n]) => a + n, 0) || 1;
+      for (const [lang, n] of s.top_languages.slice(0, 6)) {
+        const pct = (n / total) * 100;
+        h += '<div class="lang-row"><span class="l">' + esc(lang) + '</span><span class="meter"><span style="width:' + pct + '%"></span></span><span class="n">' + n + '</span></div>';
+      }
+    }
+
+    // Top countries
+    if (s.top_countries && s.top_countries.length) {
+      h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">top countries (guessed)</div>';
+      const total = s.top_countries.reduce((a, [, n]) => a + n, 0) || 1;
+      for (const [c, n] of s.top_countries.slice(0, 6)) {
+        const pct = (n / total) * 100;
+        h += '<div class="lang-row"><span class="l" style="min-width:90px">' + esc(c) + '</span><span class="meter"><span style="width:' + pct + '%;background:#a78bfa"></span></span><span class="n">' + n + '</span></div>';
+      }
+    }
+
+    // Quick stats
+    h += '<div class="divider"></div>';
+    h += '<div class="row"><span class="k">DAU 30d</span><span class="v">' + s.users_active_30d + '</span></div>';
+    h += '<div class="row"><span class="k">premium users</span><span class="v">' + s.users_premium + '</span></div>';
+    if (s.subscribed || s.unsubscribed) {
+      h += '<div class="row"><span class="k">subscribed / unsub</span><span class="v">' + s.subscribed + ' / ' + s.unsubscribed + '</span></div>';
+    }
+    if (s.payments_total_count) {
+      const pay = Object.entries(s.payments_total_amount_by_currency).map(([c, v]) => v + ' ' + c).join(', ');
+      h += '<div class="row"><span class="k">payments</span><span class="v">' + s.payments_total_count + ' · ' + pay + '</span></div>';
+    }
+    h += '<div class="row"><span class="k">last event</span><span class="v">' + (s.last_event_at ? timeAgo(s.last_event_at) : '—') + '</span></div>';
+    if (log && log.exists) {
+      h += '<div class="row"><span class="k">log file</span><span class="v">' + fmtBytes(log.size_bytes) + '</span></div>';
+    }
+
+    // Download buttons
+    h += '<div class="divider"></div>';
+    h += '<div class="actions">';
+    h += '<button class="btn ghost" id="dlLog">⬇ events .jsonl</button>';
+    h += '<button class="btn ghost" id="dlSummary">⬇ summary .json</button>';
+    h += '</div>';
+    h += '<div class="actions" style="margin-top:8px">';
+    h += '<button class="btn danger" id="wipeAnalytics">wipe data</button>';
+    h += '</div>';
+    h += '<div class="help-block">events file = one JSON per line, perfect for excel, pandas, or feeding to claude. summary = ready aggregates with full users dict. <b>no raw message text</b> is ever recorded — only metadata.</div>';
+
+    body.innerHTML = h;
+
+    document.getElementById('analyticsToggle').addEventListener('click', toggleAnalytics);
+    document.getElementById('dlLog').addEventListener('click', async () => {
+      try {
+        await downloadAuth(
+          '/telepath/api/pap/analytics/log?pap_token=' + encodeURIComponent(TOKEN),
+          (TOKEN ? TOKEN.replace(/^pap_/, '') : 'project') + '-events.jsonl'
+        );
+      } catch (e) { toast('failed: '+e.message); }
+    });
+    document.getElementById('dlSummary').addEventListener('click', async () => {
+      try {
+        await downloadAuth(
+          '/telepath/api/pap/analytics/summary-raw?pap_token=' + encodeURIComponent(TOKEN),
+          (TOKEN ? TOKEN.replace(/^pap_/, '') : 'project') + '-summary.json'
+        );
+      } catch (e) { toast('failed: '+e.message); }
+    });
+    document.getElementById('wipeAnalytics').addEventListener('click', async () => {
+      if (!confirm('wipe ALL analytics data? this cannot be undone.')) return;
+      try {
+        await api('DELETE', '/telepath/api/pap/analytics?pap_token=' + encodeURIComponent(TOKEN));
+        toast('wiped ✓');
+        loadAnalytics(enabled);
+      } catch (e) { toast('failed: '+e.message); }
+    });
+  }
+
+  async function toggleAnalytics() {
+    const el = document.getElementById('analyticsToggle');
+    const newState = !el.classList.contains('on');
+    try {
+      await api('PATCH', '/telepath/api/pap/bot/analytics', { pap_token: TOKEN, enabled: newState });
+      toast(newState ? 'recording on ✓' : 'recording off');
+      loadAnalytics(newState);
+    } catch (e) { toast('failed: '+e.message); }
   }
 
   function openBroadcastModal(mode) {
