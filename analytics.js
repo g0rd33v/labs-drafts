@@ -12,17 +12,12 @@
 // Owner-only: served via WebApp endpoints with PAP initData auth.
 
 import fs from 'fs';
-import fsp from 'fs/promises';
 import path from 'path';
 
-// ─────────────────────────────────────────────────────────────
-// Limits / config
-// ─────────────────────────────────────────────────────────────
-const MAX_USERS_IN_SUMMARY = 10000;        // hard cap on by_user keys
-const MAX_BYTES_BEFORE_ROTATE = 50 * 1024 * 1024; // 50MB
-const SUMMARY_DAILY_KEEP_DAYS = 60;        // keep this many daily snapshots
+const MAX_USERS_IN_SUMMARY = 10000;
+const MAX_BYTES_BEFORE_ROTATE = 50 * 1024 * 1024;
+const SUMMARY_DAILY_KEEP_DAYS = 60;
 
-// language_code → country guess (best effort, ~80% accurate by aggregate)
 const LANG_TO_COUNTRY_GUESS = {
   'ru': 'RU', 'uk': 'UA', 'be': 'BY', 'kk': 'KZ', 'ky': 'KG', 'uz': 'UZ', 'tg': 'TJ',
   'en': 'US', 'en-us': 'US', 'en-gb': 'GB', 'en-au': 'AU', 'en-ca': 'CA', 'en-in': 'IN',
@@ -46,48 +41,35 @@ function guessCountry(langCode) {
   return LANG_TO_COUNTRY_GUESS[base] || null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// File paths
-// ─────────────────────────────────────────────────────────────
-function logPath(projectName, draftsDir) {
-  return path.join(draftsDir, projectName, '.analytics.jsonl');
-}
-function summaryPath(projectName, draftsDir) {
-  return path.join(draftsDir, projectName, '.analytics-summary.json');
-}
-function dailyDir(projectName, draftsDir) {
-  return path.join(draftsDir, projectName, '.analytics-daily');
-}
-function dailyPath(projectName, draftsDir, date) {
-  return path.join(dailyDir(projectName, draftsDir), date + '.json');
-}
+function projectRoot(projectName, draftsDir) { return path.join(draftsDir, projectName); }
+function logPath(projectName, draftsDir) { return path.join(projectRoot(projectName, draftsDir), '.analytics.jsonl'); }
+function summaryPath(projectName, draftsDir) { return path.join(projectRoot(projectName, draftsDir), '.analytics-summary.json'); }
+function dailyDir(projectName, draftsDir) { return path.join(projectRoot(projectName, draftsDir), '.analytics-daily'); }
 
-// ─────────────────────────────────────────────────────────────
-// Summary skeleton + load/save
-// ─────────────────────────────────────────────────────────────
 function emptySummary() {
   return {
     version: 1,
     started_at: new Date().toISOString(),
     last_event_at: null,
     events_total: 0,
-    by_type: {},               // update type -> count
-    by_message_type: {},       // text/photo/voice/etc -> count
-    by_chat_type: {},          // private/group/supergroup/channel -> count
-    by_language: {},           // language_code -> count
-    by_country_guess: {},      // ISO2 -> count
+    by_type: {},
+    by_message_type: {},
+    by_chat_type: {},
+    by_language: {},
+    by_country_guess: {},
+    by_command: {},
     by_hour_utc: Array(24).fill(0),
-    by_dow_utc: Array(7).fill(0),  // 0=Sun, 6=Sat
-    by_day: {},                // YYYY-MM-DD -> count, last 60 days only
+    by_dow_utc: Array(7).fill(0),
+    by_day: {},
     users_total: 0,
     users_premium: 0,
-    users_active_7d: 0,        // recomputed on demand
+    users_active_7d: 0,
     users_active_30d: 0,
-    by_user: {},               // tg_user_id -> { first_seen, last_seen, events, premium, lang, name, username }
-    subscribed: 0,             // /start or my_chat_member member-status
-    unsubscribed: 0,           // my_chat_member kicked/left
-    payments_count: 0,
-    payments_revenue: {},      // currency -> total minor units
+    by_user: {},
+    subscribed: 0,
+    unsubscribed: 0,
+    payments_total_count: 0,
+    payments_total_amount_by_currency: {},
   };
 }
 
@@ -96,17 +78,15 @@ function loadSummary(projectName, draftsDir) {
   if (!fs.existsSync(p)) return emptySummary();
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    // backfill any missing fields against empty skeleton
-    const skeleton = emptySummary();
-    return { ...skeleton, ...raw,
-      by_hour_utc: Array.isArray(raw.by_hour_utc) && raw.by_hour_utc.length === 24 ? raw.by_hour_utc : skeleton.by_hour_utc,
-      by_dow_utc: Array.isArray(raw.by_dow_utc) && raw.by_dow_utc.length === 7 ? raw.by_dow_utc : skeleton.by_dow_utc,
-      by_day: raw.by_day || {},
+    const skel = emptySummary();
+    return { ...skel, ...raw,
+      by_hour_utc: Array.isArray(raw.by_hour_utc) && raw.by_hour_utc.length === 24 ? raw.by_hour_utc : skel.by_hour_utc,
+      by_dow_utc: Array.isArray(raw.by_dow_utc) && raw.by_dow_utc.length === 7 ? raw.by_dow_utc : skel.by_dow_utc,
       by_user: raw.by_user || {},
-      payments_revenue: raw.payments_revenue || {},
+      payments_total_amount_by_currency: raw.payments_total_amount_by_currency || raw.payments_revenue || {},
     };
   } catch (e) {
-    console.error('[analytics] failed to load summary for ' + projectName + ':', e.message);
+    console.error('[analytics] summary load failed for ' + projectName + ':', e.message);
     return emptySummary();
   }
 }
@@ -119,12 +99,11 @@ function saveSummary(projectName, draftsDir, summary) {
     fs.writeFileSync(tmp, JSON.stringify(summary));
     fs.renameSync(tmp, p);
   } catch (e) {
-    console.error('[analytics] failed to save summary for ' + projectName + ':', e.message);
+    console.error('[analytics] summary save failed for ' + projectName + ':', e.message);
   }
 }
 
-// In-memory cache so we don't re-read the summary on every event (high write rate)
-const summaryCache = new Map();  // projectName -> summary object
+const summaryCache = new Map();
 
 function getCached(projectName, draftsDir) {
   if (!summaryCache.has(projectName)) {
@@ -133,9 +112,6 @@ function getCached(projectName, draftsDir) {
   return summaryCache.get(projectName);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Log rotation
-// ─────────────────────────────────────────────────────────────
 function rotateIfNeeded(projectName, draftsDir) {
   const lp = logPath(projectName, draftsDir);
   if (!fs.existsSync(lp)) return false;
@@ -153,9 +129,6 @@ function rotateIfNeeded(projectName, draftsDir) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Update -> event projection
-// ─────────────────────────────────────────────────────────────
 function inferUpdateType(upd) {
   if (upd.message) return 'message';
   if (upd.edited_message) return 'edited_message';
@@ -196,7 +169,6 @@ function inferMessageType(msg) {
 }
 
 function extractUser(upd) {
-  // Pull tg user from any plausible position
   return upd.message?.from
       || upd.edited_message?.from
       || upd.callback_query?.from
@@ -227,11 +199,7 @@ function buildEvent(upd) {
   const updateType = inferUpdateType(upd);
   const tgUser = extractUser(upd);
   const chat = extractChat(upd);
-  const ev = {
-    update_id: upd.update_id || null,
-    type: updateType,
-    at,
-  };
+  const ev = { update_id: upd.update_id || null, type: updateType, at };
   if (tgUser) {
     ev.user = {
       id: tgUser.id,
@@ -244,17 +212,13 @@ function buildEvent(upd) {
     };
     ev.country_guess = guessCountry(tgUser.language_code);
   }
-  if (chat) {
-    ev.chat = { id: chat.id, type: chat.type };
-  }
+  if (chat) ev.chat = { id: chat.id, type: chat.type };
 
-  // Type-specific extras
   if (updateType === 'message' || updateType === 'edited_message' || updateType === 'channel_post') {
     const msg = upd.message || upd.edited_message || upd.channel_post;
     ev.message_type = inferMessageType(msg);
     if (msg.text) {
       ev.text_length = msg.text.length;
-      // command detection (only the command token itself, no args)
       const m = msg.text.match(/^\/([a-zA-Z0-9_]+)/);
       if (m) ev.command = '/' + m[1].toLowerCase();
     }
@@ -275,22 +239,12 @@ function buildEvent(upd) {
     ev.member_old_status = upd.my_chat_member.old_chat_member?.status || null;
     ev.member_new_status = upd.my_chat_member.new_chat_member?.status || null;
   } else if (updateType === 'pre_checkout_query') {
-    ev.payment = {
-      currency: upd.pre_checkout_query.currency,
-      total_amount: upd.pre_checkout_query.total_amount,
-    };
+    ev.payment = { currency: upd.pre_checkout_query.currency, total_amount: upd.pre_checkout_query.total_amount };
   }
-
   return ev;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Apply event to summary
-// ─────────────────────────────────────────────────────────────
-function inc(obj, key, by = 1) {
-  if (!key) return;
-  obj[key] = (obj[key] || 0) + by;
-}
+function inc(obj, key, by = 1) { if (!key) return; obj[key] = (obj[key] || 0) + by; }
 
 function applyEventToSummary(s, ev) {
   s.events_total += 1;
@@ -300,28 +254,33 @@ function applyEventToSummary(s, ev) {
   if (ev.chat?.type) inc(s.by_chat_type, ev.chat.type);
   if (ev.user?.language_code) inc(s.by_language, ev.user.language_code);
   if (ev.country_guess) inc(s.by_country_guess, ev.country_guess);
+  if (ev.command) inc(s.by_command, ev.command);
 
   const d = new Date(ev.at);
   s.by_hour_utc[d.getUTCHours()] += 1;
   s.by_dow_utc[d.getUTCDay()] += 1;
   const dayKey = d.toISOString().slice(0, 10);
   inc(s.by_day, dayKey);
-  // Trim by_day to last 60 keys
   const days = Object.keys(s.by_day).sort();
   if (days.length > 60) {
     for (const k of days.slice(0, days.length - 60)) delete s.by_day[k];
   }
 
-  // user dimension
   if (ev.user && !ev.user.is_bot) {
     const uid = String(ev.user.id);
     let urec = s.by_user[uid];
     if (!urec) {
-      // hard cap protection
       if (Object.keys(s.by_user).length >= MAX_USERS_IN_SUMMARY) {
-        // already at cap: skip adding new users to by_user but still count totals
+        // cap: skip new users
       } else {
-        urec = { first_seen: ev.at, last_seen: ev.at, events: 0, premium: ev.user.is_premium, lang: ev.user.language_code || null, country: ev.country_guess || null, name: ev.user.first_name || null, username: ev.user.username || null };
+        urec = {
+          first_seen: ev.at, last_seen: ev.at, events: 0,
+          premium: ev.user.is_premium,
+          lang: ev.user.language_code || null,
+          country: ev.country_guess || null,
+          name: ev.user.first_name || null,
+          username: ev.user.username || null,
+        };
         s.by_user[uid] = urec;
         s.users_total += 1;
         if (ev.user.is_premium) s.users_premium += 1;
@@ -330,7 +289,6 @@ function applyEventToSummary(s, ev) {
     if (urec) {
       urec.last_seen = ev.at;
       urec.events += 1;
-      // refresh fields that may have changed (username, premium status)
       if (ev.user.username) urec.username = ev.user.username;
       if (ev.user.first_name) urec.name = ev.user.first_name;
       const wasPremium = urec.premium;
@@ -340,7 +298,6 @@ function applyEventToSummary(s, ev) {
     }
   }
 
-  // subscribe / unsubscribe via my_chat_member
   if (ev.type === 'my_chat_member') {
     const oldS = ev.member_old_status;
     const newS = ev.member_new_status;
@@ -348,13 +305,11 @@ function applyEventToSummary(s, ev) {
     if (!isMember(oldS) && isMember(newS)) s.subscribed += 1;
     if (isMember(oldS) && !isMember(newS)) s.unsubscribed += 1;
   }
-  // Also count /start as a subscribe signal
   if (ev.command === '/start') s.subscribed += 1;
 
-  // payments
   if (ev.payment && ev.type === 'message' && ev.message_type === 'successful_payment') {
-    s.payments_count += 1;
-    inc(s.payments_revenue, ev.payment.currency, ev.payment.total_amount || 0);
+    s.payments_total_count += 1;
+    inc(s.payments_total_amount_by_currency, ev.payment.currency, ev.payment.total_amount || 0);
   }
 }
 
@@ -372,19 +327,14 @@ function refreshLiveActivityCounts(s) {
   s.users_active_30d = a30;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Public: record an update
-// ─────────────────────────────────────────────────────────────
 export function recordUpdate(projectName, draftsDir, upd) {
   if (!projectName || !draftsDir || !upd) return;
   try {
     const ev = buildEvent(upd);
-    // Append to JSONL
     rotateIfNeeded(projectName, draftsDir);
     const lp = logPath(projectName, draftsDir);
     fs.mkdirSync(path.dirname(lp), { recursive: true });
     fs.appendFileSync(lp, JSON.stringify(ev) + '\n');
-    // Update summary cache + persist
     const s = getCached(projectName, draftsDir);
     applyEventToSummary(s, ev);
     saveSummary(projectName, draftsDir, s);
@@ -393,59 +343,40 @@ export function recordUpdate(projectName, draftsDir, upd) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Public: read summary for the dashboard (lightweight projection)
-// ─────────────────────────────────────────────────────────────
+// Returns the shape that the WebApp dashboard expects:
+//   - premium_pct, payments_total_count, payments_total_amount_by_currency
+//   - top_languages / top_countries as [code, count] tuple arrays
 export function getSummary(projectName, draftsDir) {
   const s = getCached(projectName, draftsDir);
   refreshLiveActivityCounts(s);
-
-  // Build top lists (don't return the whole by_user / by_language map)
-  const topLanguages = Object.entries(s.by_language).sort((a,b) => b[1]-a[1]).slice(0, 10).map(([k,v]) => ({ code: k, count: v }));
-  const topCountries = Object.entries(s.by_country_guess).sort((a,b) => b[1]-a[1]).slice(0, 15).map(([k,v]) => ({ code: k, count: v }));
-  const topMessageTypes = Object.entries(s.by_message_type).sort((a,b) => b[1]-a[1]).map(([k,v]) => ({ type: k, count: v }));
-  // recent users (last 20 by last_seen)
-  const users = Object.entries(s.by_user)
-    .map(([id, u]) => ({ id, ...u }))
-    .sort((a,b) => new Date(b.last_seen) - new Date(a.last_seen))
-    .slice(0, 20)
-    .map(u => ({
-      id: u.id, name: u.name, username: u.username,
-      premium: u.premium, lang: u.lang, country: u.country,
-      events: u.events, first_seen: u.first_seen, last_seen: u.last_seen,
-    }));
-
-  // last 30 days time series
-  const sortedDays = Object.keys(s.by_day).sort();
-  const last30 = sortedDays.slice(-30).map(d => ({ date: d, count: s.by_day[d] }));
-
+  const topLanguages = Object.entries(s.by_language).sort((a,b) => b[1]-a[1]).slice(0, 10);
+  const topCountries = Object.entries(s.by_country_guess).sort((a,b) => b[1]-a[1]).slice(0, 15);
+  const premium_pct = s.users_total > 0 ? Math.round((s.users_premium / s.users_total) * 100) : 0;
   return {
     started_at: s.started_at,
     last_event_at: s.last_event_at,
     events_total: s.events_total,
     users_total: s.users_total,
     users_premium: s.users_premium,
-    users_active_7d: s.users_active_7d,
-    users_active_30d: s.users_active_30d,
+    premium_pct,
+    users_active_7d: s.users_active_7d || 0,
+    users_active_30d: s.users_active_30d || 0,
     subscribed: s.subscribed,
     unsubscribed: s.unsubscribed,
-    payments_count: s.payments_count,
-    payments_revenue: s.payments_revenue,
+    payments_total_count: s.payments_total_count,
+    payments_total_amount_by_currency: s.payments_total_amount_by_currency,
     by_type: s.by_type,
+    by_message_type: s.by_message_type,
     by_chat_type: s.by_chat_type,
+    by_command: s.by_command,
     by_hour_utc: s.by_hour_utc,
     by_dow_utc: s.by_dow_utc,
-    last_30_days: last30,
+    by_day: s.by_day,
     top_languages: topLanguages,
     top_countries: topCountries,
-    top_message_types: topMessageTypes,
-    recent_users: users,
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Public: stream raw log file
-// ─────────────────────────────────────────────────────────────
 export function getLogStream(projectName, draftsDir) {
   const lp = logPath(projectName, draftsDir);
   if (!fs.existsSync(lp)) return null;
@@ -454,70 +385,68 @@ export function getLogStream(projectName, draftsDir) {
 
 export function getLogStats(projectName, draftsDir) {
   const lp = logPath(projectName, draftsDir);
-  if (!fs.existsSync(lp)) return { exists: false, size: 0 };
+  if (!fs.existsSync(lp)) return { exists: false, size_bytes: 0 };
   const stat = fs.statSync(lp);
-  return { exists: true, size: stat.size, mtime: stat.mtime.toISOString() };
+  return { exists: true, size_bytes: stat.size, mtime: stat.mtime.toISOString() };
 }
 
+// Returns a stream of the FULL summary JSON file (used as download endpoint)
 export function getSummaryRaw(projectName, draftsDir) {
-  return getCached(projectName, draftsDir);
+  const s = getCached(projectName, draftsDir);
+  refreshLiveActivityCounts(s);
+  saveSummary(projectName, draftsDir, s);
+  const sp = summaryPath(projectName, draftsDir);
+  if (!fs.existsSync(sp)) return null;
+  return fs.createReadStream(sp);
 }
 
 export function listArchives(projectName, draftsDir) {
-  const dir = path.join(draftsDir, projectName);
+  const dir = projectRoot(projectName, draftsDir);
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter(f => f.startsWith('.analytics-archive-') && f.endsWith('.jsonl'))
     .map(f => {
       const stat = fs.statSync(path.join(dir, f));
-      return { filename: f, size: stat.size, mtime: stat.mtime.toISOString() };
+      return { filename: f, size_bytes: stat.size, mtime: stat.mtime.toISOString() };
     })
     .sort((a,b) => b.mtime.localeCompare(a.mtime));
 }
 
 export function getArchiveStream(projectName, draftsDir, filename) {
   if (!filename || !filename.startsWith('.analytics-archive-') || !filename.endsWith('.jsonl')) return null;
-  // sanitize: no path traversal
   if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null;
-  const fp = path.join(draftsDir, projectName, filename);
+  const fp = path.join(projectRoot(projectName, draftsDir), filename);
   if (!fs.existsSync(fp)) return null;
   return fs.createReadStream(fp);
 }
 
-// ─────────────────────────────────────────────────────────────
-// Public: wipe analytics for a project (owner-triggered reset)
-// ─────────────────────────────────────────────────────────────
 export function wipeAnalytics(projectName, draftsDir) {
-  const dir = path.join(draftsDir, projectName);
+  const dir = projectRoot(projectName, draftsDir);
   let removed = 0;
-  for (const f of fs.readdirSync(dir).filter(f => f.startsWith('.analytics'))) {
-    try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); removed += 1; } catch (e) {}
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir).filter(f => f.startsWith('.analytics'))) {
+      try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); removed += 1; } catch (e) {}
+    }
   }
   summaryCache.delete(projectName);
   return { removed };
 }
 
-// ─────────────────────────────────────────────────────────────
-// Daily snapshot scheduler (runs once a day at midnight UTC)
-// ─────────────────────────────────────────────────────────────
 let snapshotTimer = null;
 
 function takeDailySnapshot(getDraftsState, draftsDir) {
   try {
     const state = getDraftsState();
-    const date = new Date(Date.now() - 1000).toISOString().slice(0, 10); // yesterday's date in UTC
+    const date = new Date(Date.now() - 1000).toISOString().slice(0, 10);
     for (const project of state.projects) {
       if (!project.bot || !project.bot.token) continue;
       const s = getCached(project.name, draftsDir);
       refreshLiveActivityCounts(s);
-      const dpath = dailyPath(project.name, draftsDir, date);
+      const dp = path.join(dailyDir(project.name, draftsDir), date + '.json');
       try {
-        fs.mkdirSync(path.dirname(dpath), { recursive: true });
-        fs.writeFileSync(dpath, JSON.stringify(s));
-      } catch (e) {
-        console.error('[analytics] daily snapshot write failed for ' + project.name + ':', e.message);
-      }
-      // prune old snapshots
+        fs.mkdirSync(path.dirname(dp), { recursive: true });
+        fs.writeFileSync(dp, JSON.stringify(s));
+      } catch (e) { console.error('[analytics] daily write failed for ' + project.name + ':', e.message); }
       try {
         const dir = dailyDir(project.name, draftsDir);
         if (fs.existsSync(dir)) {
@@ -538,14 +467,12 @@ function takeDailySnapshot(getDraftsState, draftsDir) {
 
 export function startDailySnapshotScheduler(getDraftsState, draftsDir) {
   if (snapshotTimer) clearTimeout(snapshotTimer);
-  // Compute ms until next 00:05 UTC (a few minutes after midnight to be safe)
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 5, 0, 0));
   const ms = next.getTime() - now.getTime();
   snapshotTimer = setTimeout(() => {
     takeDailySnapshot(getDraftsState, draftsDir);
-    // schedule recurring 24h interval
     setInterval(() => takeDailySnapshot(getDraftsState, draftsDir), 24 * 3600 * 1000);
   }, ms);
-  console.log('[analytics] daily snapshot scheduled in ' + Math.round(ms/3600/1000) + 'h');
+  console.log('[analytics] daily snapshot scheduled in ' + Math.round(ms / 3600 / 1000) + 'h');
 }
