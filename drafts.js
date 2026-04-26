@@ -1,4 +1,4 @@
-// drafts v0.6 — Three-tier access model + Telepath + Project Bots (webhook forwarder).
+// drafts v0.7 — Three-tier access model + Telepath + Project Bots + Per-project analytics.
 //
 // Public URL scheme:
 //   /<n>/                     -> live
@@ -14,7 +14,8 @@
 //   PAP — project owner
 //   AAP — contributor
 //   TAP — Telegram bot pass (set by SAP, attaches a bot to this server)
-//   PBOT — per-project bot (set by PAP via WebApp, two modes: default or webhook)
+//   PBOT — per-project bot (set by PAP via WebApp, two modes: default or webhook,
+//          plus automatic privacy-respecting analytics)
 //
 // Spec & registry: https://github.com/g0rd33v/drafts-protocol
 
@@ -29,8 +30,9 @@ import dotenv from 'dotenv';
 import { buildRichContext } from "./rich-context.js";
 import { initTelepath, mountTelepathRoutes, hooks as telepathHooks, getTelepathStatus } from "./telepath.js";
 import { initProjectBots } from "./project-bots.js";
+import { startDailySnapshotScheduler } from "./analytics.js";
 
-const VERSION = '0.6';
+const VERSION = '0.7';
 
 // Config: try /etc/labs/drafts.env first (production), then ./drafts.env (dev), then legacy
 const ENV_CANDIDATES = ['/etc/labs/drafts.env', './drafts.env', '/opt/drafts-receiver/.env'];
@@ -40,7 +42,6 @@ const PORT            = Number(process.env.PORT || 3100);
 const SERVER_NUMBER   = Number(process.env.SERVER_NUMBER || 0);
 let   SAP_TOKEN       = process.env.BEARER_TOKEN || process.env.SAP_TOKEN;
 const DRAFTS_DIR      = process.env.DRAFTS_DIR || '/var/lib/drafts';
-// Expose DRAFTS_DIR to all child modules (project-bots.js reads live/index.html via this)
 process.env.DRAFTS_DIR = DRAFTS_DIR;
 const PUBLIC_BASE     = process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE || (() => {
   console.error('FATAL: PUBLIC_BASE_URL must be set (e.g. https://drafts.example.com)');
@@ -51,7 +52,6 @@ const GITHUB_TOKEN    = process.env.GITHUB_TOKEN || '';
 const STATE_PATH      = path.join(DRAFTS_DIR, '.state.json');
 const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/claude-for-chrome/fmpnliohjhemenmnlpbfagaolkdacoja';
 
-// Reserved project names — these collide with API/system paths
 const RESERVED_NAMES = new Set([
   'drafts', 'live', 'api', 'pass', 'v', 'version', 'versions',
   'health', 'whoami', 'projects', 'aaps', 'aap', 'pap', 'sap', 'tap',
@@ -60,7 +60,6 @@ const RESERVED_NAMES = new Set([
   'files', 'file', 'history', 'about', 'gallery', 'docs', 'telepath',
 ]);
 
-// Auto-mint SAP on first run if not provided
 if (!SAP_TOKEN) {
   SAP_TOKEN = crypto.randomBytes(8).toString('hex');
   const sapFile = '/etc/labs/drafts.sap';
@@ -77,10 +76,6 @@ if (!SAP_TOKEN) {
     console.log('SAP minted (NOT persisted, save now): ' + SAP_TOKEN + ' — error: ' + e.message);
   }
 }
-
-// ─────────────────────────────────────────────────────────────
-// State
-// ─────────────────────────────────────────────────────────────
 
 let state = { projects: [], github_default: null };
 function loadState() {
@@ -116,10 +111,6 @@ function migrateProjectBotsToV06() {
 }
 migrateProjectBotsToV06();
 
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
-
 const TIER_BYTES = { sap: 8, pap: 6, aap: 5 };
 const newToken   = (prefix) => prefix + '_' + crypto.randomBytes(TIER_BYTES[prefix] || 6).toString('hex');
 const newId      = () => crypto.randomBytes(4).toString('hex');
@@ -152,7 +143,6 @@ function resolveGithubConfig(project) {
   return null;
 }
 
-// Internal helper: create project (extracted so Telepath can reuse it)
 async function _createProjectInternal({ name, description = '', github_repo = null, pap_name = null }) {
   name = sanitizeName(name);
   if (!name) throw new Error('invalid_name');
@@ -171,12 +161,10 @@ async function _createProjectInternal({ name, description = '', github_repo = nu
     live_url: `${PUBLIC_BASE}/${name}/`,
     raw: proj,
   };
-  // fire telepath hook
   try { telepathHooks.onNewProject(proj); } catch (e) {}
   return out;
 }
 
-// Internal helper: create AAP for a project (Telepath uses this)
 async function _createAAPInternal(project, { name = null }) {
   const aap = { id: newId(), token: newToken('aap'), name: (name || '').toString().slice(0, 60) || null, created_at: now(), revoked: false, branch: '' };
   aap.branch = `aap/${aap.id}`;
@@ -189,10 +177,6 @@ async function _createAAPInternal(project, { name = null }) {
     activation_url: `${PUBLIC_BASE}/drafts/pass/drafts_agent_${SERVER_NUMBER}_${aapSecret}`,
   };
 }
-
-// ─────────────────────────────────────────────────────────────
-// Rate limits
-// ─────────────────────────────────────────────────────────────
 
 const RATE = {
   sap:  { perMinute: 120, perHour: 2000, perDay: 20000 },
@@ -223,10 +207,6 @@ function checkRate(tier, tokenId) {
   }
   return { ok: true };
 }
-
-// ─────────────────────────────────────────────────────────────
-// Auth
-// ─────────────────────────────────────────────────────────────
 
 function parseBearer(req) {
   const h = req.headers['authorization'] || '';
@@ -270,10 +250,6 @@ function authAny(req, res, next) {
   }
   return res.status(401).json({ ok: false, error: 'unauthorized' });
 }
-
-// ─────────────────────────────────────────────────────────────
-// Project filesystem
-// ─────────────────────────────────────────────────────────────
 
 function projectPaths(name) {
   const root = path.join(DRAFTS_DIR, name);
@@ -357,9 +333,6 @@ async function listVersions(name) {
   return dirs;
 }
 
-// ─────────────────────────────────────────────────────────────
-// MIME types for static serving
-// ─────────────────────────────────────────────────────────────
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.htm':  'text/html; charset=utf-8',
@@ -418,10 +391,6 @@ function serveStatic(rootDir, relPath, res) {
   return fs.createReadStream(target).pipe(res);
 }
 
-// ─────────────────────────────────────────────────────────────
-// App
-// ─────────────────────────────────────────────────────────────
-
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
@@ -430,23 +399,20 @@ app.get('/drafts/health', (req, res) => {
   const tp = getTelepathStatus();
   const projectBotsCount = state.projects.filter(p => p.bot && p.bot.token).length;
   const webhookBotsCount = state.projects.filter(p => p.bot && p.bot.token && p.bot.webhook_url).length;
+  const analyticsEnabledCount = state.projects.filter(p => p.bot && p.bot.token && p.bot.analytics_enabled !== false).length;
   res.json({
     ok: true,
     version: VERSION,
     protocol: 'drafts',
     server_number: SERVER_NUMBER,
     telepath: tp,
-    project_bots: { total: projectBotsCount, in_webhook_mode: webhookBotsCount },
+    project_bots: { total: projectBotsCount, in_webhook_mode: webhookBotsCount, analytics_enabled: analyticsEnabledCount },
     uptime_sec: Math.floor(process.uptime()),
   });
 });
 
-// Mount Telepath routes (TAP management + WebApp + Telepath API + Project Bots API).
+// Mount Telepath routes (TAP management + WebApp + Telepath API + Project Bots API + Analytics API).
 mountTelepathRoutes(app);
-
-// ─────────────────────────────────────────────────────────────
-// Welcome page rendering
-// ─────────────────────────────────────────────────────────────
 
 function renderPage({ tier, token, project, aap, versions = [] }) {
   const isSAP = tier === 'sap';
@@ -494,7 +460,7 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     on_first_load: { summary: project ? `Check ${apiBase}/project/info + files + history and greet based on state.` : 'Greet warmly, offer overview.' },
     transport: 'Try built-in HTTP tools first; on failure switch to Claude for Chrome silently.',
     capabilities: isSAP ? ['list_projects','create_project','delete_project','revoke_passes','configure_github_default','manage_telepath_bot']
-      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','attach_telegram_bot','set_bot_webhook_url']
+      : isPAP ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','attach_telegram_bot','set_bot_webhook_url','view_bot_analytics']
       : ['build_in_branch','read_live','read_history'],
     endpoints: isSAP ? [
       { method: 'GET', path: '/projects' },
@@ -563,7 +529,6 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
   return html;
 }
 
-// SAP-only TAP setup section, lives in welcome page
 function renderTapSection(tpStatus, sapToken) {
   let inner;
   if (tpStatus.installed && tpStatus.bot) {
@@ -621,10 +586,6 @@ function renderTapSection(tpStatus, sapToken) {
   `;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Welcome routes
-// ─────────────────────────────────────────────────────────────
-
 async function welcomeRoute(req, res) {
   let token = req.params.token || "";
   const portable = token.match(/^drafts_(server|project|agent)_(\d+)_([a-f0-9]+)$/i);
@@ -665,10 +626,6 @@ app.get('/m/:token', (req, res) => {
   return res.status(410).type('html').send('<h1>This link has expired</h1><p>Drafts was upgraded. Ask the server owner for a fresh link.</p>');
 });
 
-// ─────────────────────────────────────────────────────────────
-// API endpoints
-// ─────────────────────────────────────────────────────────────
-
 app.get('/drafts/whoami', authAny, (req, res) => {
   if (req.tier === 'sap') return res.json({ ok: true, tier: 'sap', total_projects: state.projects.length });
   if (req.tier === 'pap') return res.json({ ok: true, tier: 'pap', project: req.project.name });
@@ -685,6 +642,7 @@ app.get('/drafts/server/stats', authSAP, (req, res) => {
       aap_count: (p.aaps || []).filter(a => !a.revoked).length,
       bot_attached: !!(p.bot && p.bot.token),
       bot_mode: p.bot && p.bot.token ? (p.bot.webhook_url ? 'webhook' : 'default') : null,
+      analytics_enabled: p.bot && p.bot.token ? (p.bot.analytics_enabled !== false) : null,
     })),
   });
 });
@@ -703,6 +661,7 @@ app.get('/drafts/projects', authSAP, (req, res) => {
         last_synced_at: p.bot.last_synced_at,
         mode: p.bot.webhook_url ? 'webhook' : 'default',
         webhook_url: p.bot.webhook_url || null,
+        analytics_enabled: p.bot.analytics_enabled !== false,
       } : null,
     })),
   });
@@ -749,6 +708,7 @@ app.get('/drafts/project/info', authAny, (req, res) => {
     bot_attached: !!(p.bot && p.bot.token),
     bot_username: p.bot?.bot_username || null,
     bot_mode: p.bot && p.bot.token ? (p.bot.webhook_url ? 'webhook' : 'default') : null,
+    analytics_enabled: p.bot && p.bot.token ? (p.bot.analytics_enabled !== false) : null,
   });
 });
 
@@ -776,6 +736,7 @@ app.get('/drafts/project/stats', authPAPorSAP, async (req, res) => {
         mode: p.bot.webhook_url ? 'webhook' : 'default',
         webhook_url: p.bot.webhook_url || null,
         webhook_log_count: (p.bot.webhook_log || []).length,
+        analytics_enabled: p.bot.analytics_enabled !== false,
       } : null,
     });
   } catch (e) {
@@ -1115,9 +1076,7 @@ app.post('/drafts/github/sync', authPAPorSAP, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────
 // Public project routes — must come AFTER all /drafts/* and /telepath/* routes
-// ─────────────────────────────────────────────────────────────
 
 function isProjectName(slug) {
   if (!slug) return false;
@@ -1157,7 +1116,6 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`  data_dir: ${DRAFTS_DIR}`);
   console.log(`  SAP welcome: ${PUBLIC_BASE}/drafts/pass/drafts_server_${SERVER_NUMBER}_${SAP_TOKEN.slice(0,8)}... (full token in /etc/labs/drafts.sap)`);
 
-  // Initialize Telepath (loads TAP and starts long-polling if installed)
   initTelepath({
     draftsDir: DRAFTS_DIR,
     publicBase: PUBLIC_BASE,
@@ -1176,11 +1134,13 @@ app.listen(PORT, '127.0.0.1', () => {
     },
   });
 
-  // Initialize project bots (rebuild long-pollers from state)
   initProjectBots({
     publicBase: PUBLIC_BASE,
     getDraftsState: () => state,
     saveDraftsState: saveState,
     findProjectByName,
   });
+
+  // Daily snapshot scheduler — writes summary to .analytics-daily/<date>.json at midnight UTC
+  startDailySnapshotScheduler(() => state, DRAFTS_DIR);
 });
