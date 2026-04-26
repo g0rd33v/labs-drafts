@@ -1,16 +1,12 @@
 // telepath.js — Drafts Telepath: control-plane Telegram bot for Drafts servers.
 //
-// v0.7: Per-project bot analytics.
-//   New endpoints:
-//     GET    /telepath/api/pap/analytics/summary      — JSON summary for dashboard
-//     GET    /telepath/api/pap/analytics/log          — download .jsonl event log
-//     GET    /telepath/api/pap/analytics/summary-raw  — download full summary.json
-//     GET    /telepath/api/pap/analytics/archives     — list rotated logs
-//     GET    /telepath/api/pap/analytics/archive      — download specific archive
-//     DELETE /telepath/api/pap/analytics              — wipe analytics data
-//     PATCH  /telepath/api/pap/analytics              — toggle analytics_enabled
-//   New WebApp card: 📊 analytics with live numbers, top languages/countries,
-//   hourly heatmap, download/wipe buttons.
+// v0.8 adds:
+//   - SAP-event notifications: onDraftsBoot / onVersionBump / onSchemaMigration hooks
+//   - notifySAPOnDraftsEvent() helper + notify_sap_on_drafts_event setting
+//   - WebApp PAP card: GitHub repo input + autosync toggle
+//   - Refreshed welcome/help texts + bot profile (name/short/long/commands)
+//
+// v0.7: Per-project bot analytics (summary/log/archives/wipe/toggle endpoints).
 
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -91,11 +87,17 @@ function loadState() {
       settings: {
         notify_sap_on_new_project: true,
         notify_sap_on_new_pap: true,
+        notify_sap_on_drafts_event: true,
         notify_pap_on_aap_merge: true,
         notify_pap_on_main_commit: true,
       },
       installed_at: null,
     };
+    persistState();
+  }
+  // v0.8: ensure new setting exists on previously-saved states
+  if (!('notify_sap_on_drafts_event' in telepathState.settings)) {
+    telepathState.settings.notify_sap_on_drafts_event = true;
     persistState();
   }
 }
@@ -324,25 +326,35 @@ function tierBadge(tier) {
   return { sap: '🔑 server', pap: '📁 project', aap: '🤝 agent' }[tier] || tier;
 }
 
+// v0.8: refreshed welcome
 function welcomeText(user) {
   const name = user && user.first_name ? user.first_name : 'there';
   let t = `<b>Drafts</b> ✦ build by talking to Claude\n\n`;
   t += `gm ${esc(name)} 👋\n\n`;
-  t += '/new — make a project\n';
-  t += 'or paste a <code>pap_…</code> / <code>aap_…</code> to open one\n\n';
-  t += '/help · /projects · /forget';
+  t += `here's the deal:\n`;
+  t += `1. tap <b>/new</b> — pick a name, get a project\n`;
+  t += `2. open the <b>pass-link</b> with Claude\n`;
+  t += `3. tell Claude what to build — it ships\n\n`;
+  t += `every project gets a live URL, version history, and an optional Telegram bot with analytics.\n\n`;
+  t += `ready? → /new`;
   return t;
 }
 
+// v0.8: refreshed help
 function helpText() {
-  let t = '<b>commands</b>\n\n';
-  t += '/new — new project\n';
-  t += '/projects — your projects\n';
-  t += '/forget — drop a token\n';
-  t += '/notif <code>on|off</code> — notifications\n';
-  t += '/start — welcome\n';
-  t += '/help — this\n\n';
-  t += 'paste any <code>pap_…</code> or <code>aap_…</code> to open it.';
+  let t = '<b>how Drafts works</b>\n\n';
+  t += '<b>/new</b> — make a project. you get a name, a live URL, and a pass-link.\n\n';
+  t += 'open the pass-link in Claude (browser or Chrome extension). Claude reads what is there and builds whatever you ask. each commit auto-saves a version.\n\n';
+  t += '<b>/projects</b> — see what you got. tap any to open the dashboard.\n\n';
+  t += 'from the dashboard you can:\n';
+  t += '· share with collaborators (agents)\n';
+  t += '· attach a Telegram bot to your project\n';
+  t += '· forward bot messages to your own webhook\n';
+  t += '· see analytics: users, languages, countries, peak hours\n';
+  t += '· download all data as JSON anytime\n';
+  t += '· enable GitHub auto-sync\n\n';
+  t += 'need a bot? → @BotFather → /newbot → paste token in dashboard\n\n';
+  t += 'stuck? press /start.';
   return t;
 }
 
@@ -675,25 +687,31 @@ async function refreshBotMe() {
   }
 }
 
+// v0.8: refreshed bot profile (matches what Telegram API was set to)
 async function configureBotProfile() {
   if (!TAP || !TAP.token) return;
   const commands = [
-    { command: 'new',      description: 'new project ✨' },
-    { command: 'projects', description: 'your projects' },
-    { command: 'help',     description: 'help' },
-    { command: 'forget',   description: 'drop a token' },
-    { command: 'notif',    description: 'notifications on/off' },
-    { command: 'cancel',   description: 'cancel /new' },
+    { command: 'new',      description: '✨ start a project' },
+    { command: 'projects', description: '📁 your projects' },
+    { command: 'help',     description: '💡 how it works' },
+    { command: 'notif',    description: '🔔 notifications on/off' },
+    { command: 'forget',   description: '🗑 drop a token' },
+    { command: 'cancel',   description: 'cancel current action' },
     { command: 'start',    description: 'welcome' },
   ];
-  const shortDesc = 'Build by talking to Claude. Premium only.';
+  const name = 'Drafts';
+  const shortDesc = 'Build websites, mini-apps, and Telegram bots by talking to Claude. No code. Premium only.';
   const longDesc =
-    'Drafts turns Telegram into your build space. Type /new to create a project, then talk to Claude to build a website, app, or bot. Each version is saved automatically.';
+    'Drafts turns Telegram into your build space.\n\n' +
+    '/new makes a project — you get a live URL and a link for Claude. Tell Claude what to build, it ships. Every change is auto-versioned, so nothing is ever lost.\n\n' +
+    'Want a Telegram bot for your project? Tap link bot in the dashboard — you get a custom @bot in seconds, with full analytics on who is using it.\n\n' +
+    'Premium-only. Free to use forever.';
   try {
+    await tgApi('setMyName', { name });
     await tgApi('setMyCommands', { commands });
     await tgApi('setMyShortDescription', { short_description: shortDesc });
     await tgApi('setMyDescription', { description: longDesc });
-    console.log('[telepath] bot profile configured');
+    console.log('[telepath] bot profile configured (v0.8)');
   } catch (e) {
     console.error('[telepath] configureBotProfile error:', e.message);
   }
@@ -708,6 +726,13 @@ function notifySAPOwners(html) {
   for (const u of subs) {
     tgSend(u.tg_user_id, html).catch(e => console.error('[telepath] notify SAP failed:', e.message));
   }
+}
+
+// v0.8: dedicated channel for drafts internal events (boot/version/migration/errors)
+function notifySAPOnDraftsEvent(html) {
+  if (!TAP) return;
+  if (!telepathState || !telepathState.settings.notify_sap_on_drafts_event) return;
+  notifySAPOwners(html);
 }
 
 function notifyPAPOwners(projectName, html) {
@@ -735,6 +760,22 @@ function onMainCommit(project, commit, versionN) {
   if (!telepathState.settings.notify_pap_on_main_commit) return;
   const msg = (commit?.summary?.changes || commit?.commit || '').toString().slice(0, 80);
   notifyPAPOwners(project.name, `📝 <code>${esc(project.name)}</code> v${versionN}: ${esc(msg || 'commit')}`);
+}
+
+// v0.8: drafts internal event hooks
+function onDraftsBoot(version, info) {
+  const { projectCount = 0, botCount = 0, firstBoot = false } = info || {};
+  const head = firstBoot ? `🚀 <b>drafts ${esc(version)}</b> · first boot` : `🟢 <b>drafts ${esc(version)}</b> · online`;
+  const body = `\n${projectCount} project${projectCount===1?'':'s'} · ${botCount} bot${botCount===1?'':'s'}`;
+  notifySAPOnDraftsEvent(head + body);
+}
+function onVersionBump(oldV, newV, info) {
+  const { projectCount = 0, botCount = 0 } = info || {};
+  const html = `⬆️ <b>drafts upgraded</b>\n${esc(oldV)} → <b>${esc(newV)}</b>\n${projectCount} project${projectCount===1?'':'s'} · ${botCount} bot${botCount===1?'':'s'}`;
+  notifySAPOnDraftsEvent(html);
+}
+function onSchemaMigration(description) {
+  notifySAPOnDraftsEvent(`🔧 <b>schema migration</b>\n${esc(description || 'completed')}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -777,7 +818,13 @@ function mountRoutes(app) {
   });
 
   app.put('/drafts/tap/settings', requireSAP, (req, res) => {
-    const allowed = ['notify_sap_on_new_project','notify_sap_on_new_pap','notify_pap_on_aap_merge','notify_pap_on_main_commit'];
+    const allowed = [
+      'notify_sap_on_new_project',
+      'notify_sap_on_new_pap',
+      'notify_sap_on_drafts_event',
+      'notify_pap_on_aap_merge',
+      'notify_pap_on_main_commit',
+    ];
     for (const k of allowed) if (k in req.body) telepathState.settings[k] = !!req.body[k];
     persistState();
     res.json({ ok: true, settings: telepathState.settings });
@@ -822,6 +869,7 @@ function mountRoutes(app) {
       if (!p) return res.status(404).json({ ok: false, error: 'project_not_found' });
       return res.json({ ok: true, tier: 'pap', public_base: PUBLIC_BASE, project: {
         name: p.name, description: p.description, github_repo: p.github_repo,
+        github_autosync: !!p.github_autosync,
         created_at: p.created_at, live_url: PUBLIC_BASE + '/' + p.name + '/',
         pass_url: PUBLIC_BASE + '/drafts/pass/drafts_project_' + SERVER_NUMBER + '_' + token.replace(/^pap_/,''),
         aaps: (p.aaps || []).map(a => ({ id: a.id, name: a.name, revoked: a.revoked, branch: a.branch })),
@@ -961,9 +1009,40 @@ function mountRoutes(app) {
     }
   });
 
-  // ── Analytics endpoints (v0.7) ──
+  // ── v0.8: GitHub repo + autosync (PAP-owned) ──
+  app.put('/telepath/api/pap/github', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    const repo = String(req.body.github_repo || '').trim();
+    if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) return res.status(400).json({ ok: false, error: 'bad_repo_format' });
+    p.github_repo = repo || null;
+    if (!p.github_repo) p.github_autosync = false;
+    if (saveDraftsState) saveDraftsState();
+    res.json({ ok: true, github_repo: p.github_repo, github_autosync: !!p.github_autosync });
+  });
 
-  // Toggle analytics_enabled on/off
+  app.patch('/telepath/api/pap/github_autosync', initDataAuth, (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    if (!p.github_repo) return res.status(400).json({ ok: false, error: 'project_not_linked_to_github' });
+    p.github_autosync = !!req.body.enabled;
+    if (saveDraftsState) saveDraftsState();
+    res.json({ ok: true, github_autosync: p.github_autosync });
+  });
+
+  app.post('/telepath/api/pap/github_sync', initDataAuth, async (req, res) => {
+    const p = papOwnerCheck(req, res);
+    if (!p) return;
+    if (!serverHelpers.githubSyncProject) return res.status(500).json({ ok: false, error: 'sync_not_wired' });
+    try {
+      const out = await serverHelpers.githubSyncProject(p);
+      res.json({ ok: true, ...out });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // ── Analytics endpoints (v0.7) ──
   app.patch('/telepath/api/pap/bot/analytics', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -976,7 +1055,6 @@ function mountRoutes(app) {
     }
   });
 
-  // GET summary for the dashboard
   app.get('/telepath/api/pap/analytics/summary', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -989,7 +1067,6 @@ function mountRoutes(app) {
     }
   });
 
-  // Download .jsonl event log
   app.get('/telepath/api/pap/analytics/log', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -1000,7 +1077,6 @@ function mountRoutes(app) {
     stream.pipe(res);
   });
 
-  // Download summary.json (full raw, including users dict)
   app.get('/telepath/api/pap/analytics/summary-raw', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -1011,14 +1087,12 @@ function mountRoutes(app) {
     stream.pipe(res);
   });
 
-  // List archived (rotated) logs
   app.get('/telepath/api/pap/analytics/archives', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
     res.json({ ok: true, archives: analyticsListArchives(p.name, DRAFTS_DIR) });
   });
 
-  // Download specific archive by name
   app.get('/telepath/api/pap/analytics/archive', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -1030,7 +1104,6 @@ function mountRoutes(app) {
     stream.pipe(res);
   });
 
-  // Wipe analytics
   app.delete('/telepath/api/pap/analytics', initDataAuth, (req, res) => {
     const p = papOwnerCheck(req, res);
     if (!p) return;
@@ -1063,7 +1136,7 @@ function initDataAuth(req, res, next) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// WebApp shell HTML — Gen Z'd, with v0.7 analytics card
+// WebApp shell HTML — v0.8 (analytics card + GitHub card)
 // ─────────────────────────────────────────────────────────────
 function renderWebAppShell(tier, token) {
   const stateUrl = '/telepath/api/state/' + tier + (token ? '/' + token : '');
@@ -1117,8 +1190,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 .log-status.err { color:#ef4444; }
 .log-time { color:#888; }
 .divider { height:1px; background:rgba(255,255,255,0.06); margin:14px 0; }
-
-/* Analytics-specific */
 .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:6px 0 14px; }
 .metric { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.04); border-radius:10px; padding:12px 14px; }
 .metric .num { font-size:22px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
@@ -1185,7 +1256,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     return j;
   }
 
-  // Authenticated download via blob (initData header required)
   async function downloadAuth(url, filename) {
     const r = await fetch(url, { headers: { 'X-Telegram-Init-Data': initData } });
     if (!r.ok) {
@@ -1250,9 +1320,8 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 
   function renderPAP(d) {
     const p = d.project;
-    let h = '<h1>'+esc(p.name)+'</h1><div class="sub">project on '+esc(d.public_base.replace(/^https?:\\/\\//,''))+'</div>';
+    let h = '<h1>'+esc(p.name)+'</h1><div class="sub">live · versions · bot · analytics</div>';
 
-    // Live + Pass-link actions
     h += '<div class="card"><h3>your project</h3>';
     h += '<div class="actions">';
     h += '<a class="btn" href="'+p.live_url+'" target="_blank">🌐 live</a>';
@@ -1278,7 +1347,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       if (p.bot.last_synced_at) h += ' · synced '+timeAgo(p.bot.last_synced_at);
       h += '</div></div></div>';
 
-      // Webhook URL editor
       h += '<div class="divider"></div>';
       h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin-bottom:8px">🔌 webhook</div>';
       if (mode === 'webhook') {
@@ -1304,10 +1372,9 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       } else {
         h += '<input id="webhookInput" placeholder="https://your-bot.vercel.app/webhook"/>';
         h += '<button class="btn full" id="webhookSaveBtn">🔌 enable webhook mode</button>';
-        h += '<div class="help-block">webhook mode = drafts forwards every telegram update to your URL. you host your bot logic anywhere (vercel, cloudflare workers, render — all free), and reply to telegram from there using your own bot token.<br><br>your webhook should respond to a POST with <code>{"ok": true}</code>. timeout: 5s. retries once.</div>';
+        h += '<div class="help-block">webhook mode = drafts forwards every telegram update to your URL. you host your bot logic anywhere (vercel, cloudflare workers, render — all free), and reply to telegram from there using your own bot token.</div>';
       }
 
-      // Default mode actions
       if (mode === 'default') {
         h += '<div class="divider"></div>';
         h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin-bottom:8px">📢 default mode</div>';
@@ -1332,12 +1399,35 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     }
     h += '</div>';
 
-    // Analytics card (only when bot installed)
+    // Analytics card
     if (p.bot.installed) {
       h += '<div class="card" id="analyticsCard"><h3>📊 analytics</h3>';
       h += '<div id="analyticsBody"><div class="empty">loading…</div></div>';
       h += '</div>';
     }
+
+    // v0.8: GitHub card
+    h += '<div class="card" id="githubCard"><h3><span class="dot '+(p.github_repo?'on':'off')+'"></span>github</h3>';
+    h += '<input id="githubRepoInput" value="'+esc(p.github_repo||'')+'" placeholder="owner/repo"/>';
+    h += '<div class="actions">';
+    if (p.github_repo) {
+      h += '<button class="btn ghost" id="githubLinkBtn">↻ update link</button>';
+      h += '<button class="btn ghost" id="githubSyncNowBtn">⤴ push now</button>';
+      h += '<button class="btn danger" id="githubUnlinkBtn">unlink</button>';
+    } else {
+      h += '<button class="btn full" id="githubLinkBtn">🔗 link repo</button>';
+    }
+    h += '</div>';
+    if (p.github_repo) {
+      h += '<div class="divider"></div>';
+      h += '<div class="toggle-row">';
+      h += '<div><div style="font-size:13.5px;font-weight:600">auto-sync</div>';
+      h += '<div class="muted">push to GitHub on every commit + merge</div></div>';
+      h += '<div class="toggle '+(p.github_autosync?'on':'')+'" id="githubAutosyncToggle"></div>';
+      h += '</div>';
+    }
+    h += '<div class="help-block">link a private GitHub repo to back up the project. when auto-sync is on, every commit/merge force-pushes <code>main</code> to your repo. you need a server-default GitHub token configured (or per-project via API).</div>';
+    h += '</div>';
 
     // Agents
     h += '<div class="card"><h3>agents · '+p.aaps.length+'</h3>';
@@ -1353,7 +1443,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     // Info
     h += '<div class="card"><h3>info</h3>';
     h += '<div class="row"><span class="k">created</span><span class="v">'+esc(p.created_at.slice(0,10))+'</span></div>';
-    if (p.github_repo) h += '<div class="row"><span class="k">github</span><span class="v">'+esc(p.github_repo)+'</span></div>';
     h += '<div class="row"><span class="k">about</span><span class="v">'+esc(p.description||'—')+'</span></div>';
     h += '</div>';
 
@@ -1369,6 +1458,53 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
         setTimeout(load, 600);
       } catch (e) { toast('failed: '+e.message); }
     });
+
+    // GitHub handlers
+    const ghLinkBtn = document.getElementById('githubLinkBtn');
+    if (ghLinkBtn) {
+      ghLinkBtn.addEventListener('click', async () => {
+        const repo = document.getElementById('githubRepoInput').value.trim();
+        if (repo && !/^[\\w.-]+\\/[\\w.-]+$/.test(repo)) { toast('format: owner/repo'); return; }
+        try {
+          await api('PUT', '/telepath/api/pap/github', { pap_token: TOKEN, github_repo: repo });
+          toast(repo ? 'linked ✓' : 'cleared');
+          setTimeout(load, 500);
+        } catch (e) { toast('failed: '+e.message); }
+      });
+    }
+    const ghUnlink = document.getElementById('githubUnlinkBtn');
+    if (ghUnlink) {
+      ghUnlink.addEventListener('click', async () => {
+        if (!confirm('unlink GitHub repo? auto-sync will turn off too.')) return;
+        try {
+          await api('PUT', '/telepath/api/pap/github', { pap_token: TOKEN, github_repo: '' });
+          toast('unlinked ✓');
+          setTimeout(load, 500);
+        } catch (e) { toast('failed: '+e.message); }
+      });
+    }
+    const ghSyncNow = document.getElementById('githubSyncNowBtn');
+    if (ghSyncNow) {
+      ghSyncNow.addEventListener('click', async () => {
+        try {
+          ghSyncNow.textContent = '⏳ pushing...';
+          await api('POST', '/telepath/api/pap/github_sync', { pap_token: TOKEN });
+          toast('pushed ✓');
+          ghSyncNow.textContent = '⤴ push now';
+        } catch (e) { ghSyncNow.textContent = '⤴ push now'; toast('failed: '+e.message); }
+      });
+    }
+    const ghAutoToggle = document.getElementById('githubAutosyncToggle');
+    if (ghAutoToggle) {
+      ghAutoToggle.addEventListener('click', async () => {
+        const newState = !ghAutoToggle.classList.contains('on');
+        try {
+          await api('PATCH', '/telepath/api/pap/github_autosync', { pap_token: TOKEN, enabled: newState });
+          toast(newState ? 'auto-sync on ✓' : 'auto-sync off');
+          setTimeout(load, 400);
+        } catch (e) { toast('failed: '+e.message); }
+      });
+    }
 
     if (p.bot.installed) {
       document.getElementById('syncBtn').addEventListener('click', () => openBroadcastModal(p.bot.mode));
@@ -1403,7 +1539,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
           } catch (e) { toast('failed: '+e.message); }
         });
       }
-      // Load analytics asynchronously so dashboard shows fast
       loadAnalytics(p.bot.analytics_enabled !== false);
     } else {
       document.getElementById('linkBtn').addEventListener('click', async () => {
@@ -1434,8 +1569,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 
   function renderAnalytics(body, s, log, enabled) {
     let h = '';
-
-    // Toggle row
     h += '<div class="toggle-row">';
     h += '<div><div style="font-size:13.5px;font-weight:600">recording '+(enabled ? 'on' : 'off')+'</div>';
     h += '<div class="muted">privacy-safe metadata only — never raw text</div></div>';
@@ -1451,7 +1584,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 
     h += '<div class="divider"></div>';
 
-    // Top metrics grid
     h += '<div class="metric-grid">';
     h += '<div class="metric blue"><div class="num">' + fmtNum(s.users_total) + '</div><div class="lbl">users total</div></div>';
     h += '<div class="metric green"><div class="num">' + fmtNum(s.events_total) + '</div><div class="lbl">events total</div></div>';
@@ -1459,7 +1591,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     h += '<div class="metric orange"><div class="num">' + s.premium_pct + '%</div><div class="lbl">premium</div></div>';
     h += '</div>';
 
-    // Daily activity chart (last 30 days)
     const dayKeys = Object.keys(s.by_day).sort();
     if (dayKeys.length > 1) {
       const last30 = dayKeys.slice(-30);
@@ -1474,7 +1605,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       h += '</div>';
     }
 
-    // Hourly heatmap
     const hMax = Math.max(...s.by_hour_utc);
     if (hMax > 0) {
       h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">activity by hour (UTC)</div>';
@@ -1487,7 +1617,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       h += '</div>';
     }
 
-    // Top languages
     if (s.top_languages && s.top_languages.length) {
       h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">top languages</div>';
       const total = s.top_languages.reduce((a, [, n]) => a + n, 0) || 1;
@@ -1497,7 +1626,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       }
     }
 
-    // Top countries
     if (s.top_countries && s.top_countries.length) {
       h += '<div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin:14px 0 4px">top countries (guessed)</div>';
       const total = s.top_countries.reduce((a, [, n]) => a + n, 0) || 1;
@@ -1507,7 +1635,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       }
     }
 
-    // Quick stats
     h += '<div class="divider"></div>';
     h += '<div class="row"><span class="k">DAU 30d</span><span class="v">' + s.users_active_30d + '</span></div>';
     h += '<div class="row"><span class="k">premium users</span><span class="v">' + s.users_premium + '</span></div>';
@@ -1523,7 +1650,6 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       h += '<div class="row"><span class="k">log file</span><span class="v">' + fmtBytes(log.size_bytes) + '</span></div>';
     }
 
-    // Download buttons
     h += '<div class="divider"></div>';
     h += '<div class="actions">';
     h += '<button class="btn ghost" id="dlLog">⬇ events .jsonl</button>';
@@ -1662,6 +1788,10 @@ export const hooks = {
   onNewAAPCreated,
   onAAPMerged,
   onMainCommit,
+  // v0.8
+  onDraftsBoot,
+  onVersionBump,
+  onSchemaMigration,
 };
 
 export function getTelepathStatus() {
