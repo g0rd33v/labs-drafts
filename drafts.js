@@ -26,10 +26,11 @@ import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import { buildRichContext } from "./rich-context.js";
 import { initTelepath, mountTelepathRoutes, hooks as telepathHooks, getTelepathStatus } from "./telepath.js";
+import * as runtime from './runtime.js';
 import { initProjectBots, projectBotsApi } from "./project-bots.js";
 import { startDailySnapshotScheduler } from "./analytics.js";
 
-const VERSION = '0.9.6';
+const VERSION = '1.0.0';
 
 // v0.9.4: detect telepath.js  when present, every project gets bot management automatically
 const TELEPATH_AVAILABLE = (() => {
@@ -1405,6 +1406,23 @@ app.post('/drafts/project/bot/broadcast', authPAPorSAP, async (req, res) => {
   const out = await projectBotsApi.broadcast(p, html);
   res.json({ ok: true, project: p.name, ...out });
 });
+
+// v1.0: runtime logs (PAP/SAP only) — read the per-project bot.js log ring buffer
+app.get('/drafts/project/bot/logs', authPAPorSAP, (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.query.project || ''));
+  if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit, 10) || 200));
+  const data = runtime.getLogs(p.name, limit);
+  res.json({ ok: true, project: p.name, ...data });
+});
+
+app.delete('/drafts/project/bot/logs', authPAPorSAP, (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.query.project || ''));
+  if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+  runtime.clearLogs(p.name);
+  res.json({ ok: true, cleared: true });
+});
+
 
 app.post('/drafts/aaps', authPAPorSAP, async (req, res) => {
   const p = req.project || findProjectByName(sanitizeName(req.body.project || ''));

@@ -1,6 +1,6 @@
 {
   "name": "drafts-protocol",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Reference implementation of the drafts protocol — agent artifact server with three-tier access (server/project/agent passes), git versioning, and federated registry.",
   "type": "module",
   "main": "drafts.js",
@@ -17,6 +17,7 @@
   },
   "homepage": "https://github.com/g0rd33v/drafts-protocol",
   "dependencies": {
+    "better-sqlite3": "^12.9.0",
     "dotenv": "^17.4.2",
     "express": "^4.19.0",
     "simple-git": "^3.25.0"

@@ -46,6 +46,7 @@ import https from 'https';
 import http from 'http';
 import { URL as NodeURL } from 'url';
 import { recordUpdate } from './analytics.js';
+import * as runtime from './runtime.js';
 
 // ─────────────────────────────────────────────────────────────
 // Config (set by init from drafts.js)
@@ -140,11 +141,18 @@ async function cronTick() {
   const minuteOfHour = new Date(minute * 60000).getUTCMinutes();
   const state = getDraftsState();
   for (const project of state.projects) {
-    if (!project.bot || !project.bot.token || !project.bot.webhook_url) continue;
+    if (!project.bot || !project.bot.token) continue;
     const cron = loadCronJson(project.name);
     if (!cron || !cron.length) continue;
+    const usingRuntime = runtime.hasBotJs(project.name);
+    if (!usingRuntime && !project.bot.webhook_url) continue;
     for (const entry of cron) {
-      if (shouldFireSchedule(entry.schedule, minuteOfHour)) {
+      if (!shouldFireSchedule(entry.schedule, minuteOfHour)) continue;
+      if (usingRuntime) {
+        runtime.handleCron(project, entry.handler).catch(e =>
+          console.error('[cron-runtime:' + project.name + ':' + entry.handler + '] fire error:', e.message)
+        );
+      } else {
         fireCron(project, entry.handler).catch(e =>
           console.error('[cron:' + project.name + ':' + entry.handler + '] fire error:', e.message)
         );
@@ -513,8 +521,7 @@ async function handleWebhookModeUpdate(project, upd) {
 // Update dispatcher — analytics FIRST, then mode-specific handler
 // ─────────────────────────────────────────────────────────────
 async function dispatchUpdate(project, upd) {
-  // Always record analytics first (synchronous, fast — file append)
-  // Wrapped in try/catch in analytics.js itself; this should never throw
+  // Analytics first — always synchronous, never throws here
   try {
     if (project.bot?.analytics_enabled !== false) {
       recordUpdate(project.name, process.env.DRAFTS_DIR || '/var/lib/drafts', upd);
@@ -523,16 +530,21 @@ async function dispatchUpdate(project, upd) {
     console.error('[project-bot:' + project.name + '] analytics error:', e.message);
   }
 
+  // v1.0 dispatch priority: webhook > runtime (bot.js) > bot.json > default
   if (project.bot?.webhook_url) {
     await handleWebhookModeUpdate(project, upd);
+    return;
+  }
+  if (runtime.hasBotJs(project.name)) {
+    const r = await runtime.handleUpdate(project, upd);
+    if (r && r.handled) return;
+    // If bot.js exists but failed to load, fall through to bot.json/default
+  }
+  const botJson = loadBotJson(project.name);
+  if (botJson && (Array.isArray(botJson.commands) || botJson.default_reply || botJson.callbacks)) {
+    await handleBotJsonUpdate(project, upd, botJson);
   } else {
-    // v0.9.3: try bot.json first, fall back to default mode
-    const botJson = loadBotJson(project.name);
-    if (botJson && (Array.isArray(botJson.commands) || botJson.default_reply || botJson.callbacks)) {
-      await handleBotJsonUpdate(project, upd, botJson);
-    } else {
-      await handleDefaultModeUpdate(project, upd);
-    }
+    await handleDefaultModeUpdate(project, upd);
   }
 }
 
@@ -797,9 +809,11 @@ function setAnalyticsEnabled(project, enabled) {
 function getBotStatus(project) {
   if (!project.bot || !project.bot.token) return { installed: false };
   const ctx = pollers.get(project.name);
-  const botJson = project.bot.webhook_url ? null : loadBotJson(project.name);
+  const hasRuntime = !project.bot.webhook_url && runtime.hasBotJs(project.name);
+  const botJson = (project.bot.webhook_url || hasRuntime) ? null : loadBotJson(project.name);
   let mode;
   if (project.bot.webhook_url) mode = 'webhook';
+  else if (hasRuntime) mode = 'runtime';
   else if (botJson) mode = 'bot.json';
   else mode = 'default';
   return {
@@ -816,6 +830,7 @@ function getBotStatus(project) {
     mode,
     bot_json_active: !!botJson,
     bot_json_commands: botJson && Array.isArray(botJson.commands) ? botJson.commands.length : 0,
+    runtime_active: hasRuntime,
     analytics_enabled: project.bot.analytics_enabled !== false,
   };
 }
