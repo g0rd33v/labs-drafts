@@ -4,7 +4,8 @@
 > Think Google Docs, but for the agent era.
 
 [![Protocol](https://img.shields.io/badge/protocol-drafts%2F0.2-blue)](docs/SPEC.md)
-[![Reference server](https://img.shields.io/badge/reference-beta.labs.vc-brightgreen)](https://beta.labs.vc/)
+[![Reference impl](https://img.shields.io/badge/reference-v1.0.0-brightgreen)](CHANGELOG.md)
+[![Reference server](https://img.shields.io/badge/server-beta.labs.vc-brightgreen)](https://beta.labs.vc/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 AI artifacts today are dead ends. Static one-shots — generated, downloaded, stuck. A third party can't extend them. They don't interact. They can't be forked, remixed, or reused. The next conversation forgets they exist.
@@ -48,6 +49,44 @@ What used to take a stack of hosting, CMS, collaboration suite, and APIs collaps
 
 ---
 
+## Per-project Telegram bot runtime (reference impl v1.0+)
+
+The reference server runs user-supplied `bot.js` for any project that has a Telegram bot attached. Drop a file, commit, promote — the server picks it up on the next update.
+
+```js
+// bot.js — sits at the project's live root
+export default async function handler(update, ctx) {
+  if (update.message?.text === '/start') {
+    await ctx.kv.incr('users');
+    await ctx.kv.set(`user:${update.message.from.id}`, { joined_at: Date.now() });
+    await ctx.send.message(update.message.chat.id, 'Welcome.');
+  }
+}
+
+export async function tick(ctx) {
+  // called from cron.json — minute granularity
+  const users = await ctx.kv.get('users');
+  ctx.log(`tick: ${users} users so far`);
+}
+```
+
+What `ctx` provides:
+
+- **`ctx.kv`** — per-project SQLite KV: `get`, `set` (with TTL), `del`, `list(prefix)`, `incr`. 10 MiB/project, 1 MiB/value.
+- **`ctx.send`** — Telegram Bot API helper: `message`, `editMessage`, `answerCallback`, `api(method, params)`. Token never reaches user code.
+- **`ctx.log(line)`** — writes to a per-project ring buffer (1000 lines), readable via `GET /drafts/project/bot/logs?limit=N`.
+- **`ctx.project`, `ctx.user_id`** — context.
+
+Sandbox: Node `vm` with whitelisted globals. No `fs`, `child_process`, `net`, `process`, `require`, dynamic `import`. 5-second wall-clock timeout per invocation. First-pass sandbox — sufficient against accidents and casual probes; not isolated-vm. Hardening queued for v1.1. See SPEC §3.5 / §5.1 / §7.10.
+
+`cron.json` schedules named exports of `bot.js` at minute granularity:
+
+```json
+[{ "schedule": "*/5 * * * *", "handler": "tick" }]
+```
+
+---
+
 ## The design test
 
 > **A quantized 7-billion-parameter model running locally on consumer hardware can publish a working artifact to drafts with three HTTP calls and no error recovery.**
@@ -67,7 +106,7 @@ Every design decision in this repository is measured against that test. Agents a
 | [REGISTRY.md](docs/REGISTRY.md) | How to register your own drafts server |
 | [INSTALL.md](docs/INSTALL.md) | Run a conformant server |
 
-Protocol version: **drafts/0.2** — experimental. Breaking changes possible before 1.0.
+Protocol version: **drafts/0.2** — experimental. Reference implementation: **v1.0.0**. The protocol and the reference server version independently; the reference may ship features ahead of the protocol document and codification follows.
 
 ---
 
@@ -93,7 +132,7 @@ This repository contains the reference drafts server, operated by [Labs](https:/
 
 **https://beta.labs.vc/drafts/**
 
-Stack: Node.js 18+ (Express 4), nginx 1.24 (TLS via Let's Encrypt), per-project git repos.
+Stack: Node.js 18+ (Express 4), nginx 1.24 (TLS via Let's Encrypt), per-project git repos, per-project SQLite KV (`better-sqlite3`) for the runtime capability.
 
 See [REFERENCE_IMPLEMENTATION.md](REFERENCE_IMPLEMENTATION.md) for operational detail.
 
@@ -149,25 +188,28 @@ Output is now public at `https://<host>/live/<project>/`.
 
 ## Status
 
-| Capability | 0.2 | 1.1 | 2.0 |
-|---|---|---|---|
-| Static HTML, CSS, JS, media | ✓ | ✓ | ✓ |
-| Per-project git with rollback | ✓ | ✓ | ✓ |
-| Multi-contributor branch isolation | ✓ | ✓ | ✓ |
-| HTTPS with Let's Encrypt | ✓ | ✓ | ✓ |
-| Per-tier rate limits | ✓ | ✓ | ✓ |
-| GitHub bidirectional mirror | ✓ | ✓ | ✓ |
-| GitHub config via SAP/PAP API | ✓ | ✓ | ✓ |
-| Public federation registry | ✓ | ✓ | ✓ |
-| One-command installer | ✓ | ✓ | ✓ |
-| Capability vocabulary | ✓ | ✓ | ✓ |
-| Token rotation endpoint | ✓ | ✓ | ✓ |
-| Agent-branch merge endpoint | ✓ | ✓ | ✓ |
-| Per-project SQL storage | — | ✓ | ✓ |
-| Per-project vector storage | — | ✓ | ✓ |
-| Server-side runtime | — | — | ✓ |
-| Server-routed LLM inference | — | — | ✓ |
-| End-user auth primitives | — | — | ✓ |
+| Capability | 0.2 | 1.0 (ref impl) | 1.1 | 2.0 |
+|---|---|---|---|---|
+| Static HTML, CSS, JS, media | ✓ | ✓ | ✓ | ✓ |
+| Per-project git with rollback | ✓ | ✓ | ✓ | ✓ |
+| Multi-contributor branch isolation | ✓ | ✓ | ✓ | ✓ |
+| HTTPS with Let's Encrypt | ✓ | ✓ | ✓ | ✓ |
+| Per-tier rate limits | ✓ | ✓ | ✓ | ✓ |
+| GitHub bidirectional mirror | ✓ | ✓ | ✓ | ✓ |
+| GitHub config via SAP/PAP API | ✓ | ✓ | ✓ | ✓ |
+| Public federation registry | ✓ | ✓ | ✓ | ✓ |
+| One-command installer | ✓ | ✓ | ✓ | ✓ |
+| Capability vocabulary | ✓ | ✓ | ✓ | ✓ |
+| Token rotation endpoint | — | — | ✓ | ✓ |
+| Agent-branch merge endpoint | ✓ | ✓ | ✓ | ✓ |
+| Per-project Telegram bot runtime | — | ✓ | ✓ | ✓ |
+| `cron.json` minute scheduler | — | ✓ | ✓ | ✓ |
+| Per-project KV (SQLite) | — | ✓ | ✓ | ✓ |
+| Per-project SQL storage | — | — | ✓ | ✓ |
+| Per-project vector storage | — | — | ✓ | ✓ |
+| Runtime hardening (isolated-vm) | — | — | ✓ | ✓ |
+| Server-routed LLM inference | — | — | — | ✓ |
+| End-user auth primitives | — | — | — | ✓ |
 
 See [ROADMAP.md](docs/ROADMAP.md) for capability-as-credential research, skills-as-a-service marketplace, and other research tracks.
 
