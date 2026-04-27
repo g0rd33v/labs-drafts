@@ -63,7 +63,7 @@ function openKv(projectName) {
     get: db.prepare('SELECT v, expires_at FROM kv WHERE k = ?'),
     set: db.prepare('INSERT OR REPLACE INTO kv(k, v, expires_at, bytes) VALUES (?, ?, ?, ?)'),
     del: db.prepare('DELETE FROM kv WHERE k = ?'),
-    list: db.prepare('SELECT k, expires_at FROM kv WHERE k LIKE ? ORDER BY k LIMIT 1000'),
+    list: db.prepare('SELECT k, v, expires_at FROM kv WHERE k LIKE ? ORDER BY k LIMIT 1000'),
     delExpired: db.prepare('DELETE FROM kv WHERE k = ? AND expires_at IS NOT NULL AND expires_at <= ?'),
     sumBytes: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS total FROM kv'),
   };
@@ -114,7 +114,7 @@ function openKv(projectName) {
       const out = [];
       for (const row of rows) {
         if (row.expires_at && row.expires_at <= now) { stmts.del.run(row.k); continue; }
-        out.push(row.k);
+        out.push({ key: row.k, value: decodeValue(row.v) });
       }
       return out;
     },
