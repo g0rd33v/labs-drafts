@@ -4,6 +4,36 @@ All notable changes to the drafts protocol and reference implementation.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-04-27
+
+### Reference implementation
+
+- **`runtime` capability shipped — per-project Telegram bot runtime.** Projects can now drop a `bot.js` into their `live/` folder and drafts executes it in a sandboxed Node `vm` context for every Telegram update routed to that project's bot. This is the v2.0-roadmapped `runtime` capability, brought forward to v1.0 of the reference implementation. The protocol document still lists `runtime` as v2+; the reference is ahead of the spec on this point until §5.1 is reconciled.
+  - **Entrypoint:** `bot.js` at project live root, ESM `export default async function handler(update, ctx)` plus optional named exports for cron handlers.
+  - **`ctx.kv`** — per-project SQLite-backed key-value store at `/var/lib/drafts/<project>/runtime/kv.sqlite` (WAL mode). API: `get(k)`, `set(k, v, {ttl?})`, `del(k)`, `list(prefix)`, `incr(k)`. Limits: 10 MiB/project, 1 MiB/value, 512 char/key. Lazy TTL expiry on read.
+  - **`ctx.send`** — Telegram Bot API helper. Methods: `message(chat_id, text, opts)`, `editMessage(chat_id, message_id, text, opts)`, `answerCallback(callback_query_id, text?)`, `api(method, params)`. Token captured in closure via getter — never reaches user code.
+  - **`ctx.log(line)`** — writes to a per-project ring buffer (1000 lines). Readable via `GET /drafts/project/bot/logs?limit=N` (PAP or SAP).
+  - **Cron handlers** — `cron.json` schedules now invoke named exports of `bot.js` directly when present (no webhook round-trip). Falls back to webhook POST when `bot.js` is absent.
+  - **Sandbox** — Node `vm.createContext` with whitelisted globals: `URL`, `fetch`, `Headers`, `JSON`, `Math`, `Date`, `Map`, `Set`, `Promise`, `Buffer`, `console` (proxied to logger), `crypto.randomUUID`, `setTimeout`, `clearTimeout`. NO `fs`, `child_process`, `net`, `http`, `process`, `require`, dynamic `import`. Each invocation is wrapped in `Promise.race` with a 5-second wall-clock timeout. **First-pass sandbox; not isolated-vm.** Stops accidents and casual probes. Hardening to isolated-vm queued for v1.1.
+  - **Hot reload** — `bot.js` is re-evaluated when its mtime changes. No restart required.
+  - **Dispatch order:** `bot.js` (if present and importable) → `bot.json` (templated commands) → fallback no-op.
+- **`/drafts/health` and machine JSON** now declare `runtime_capability: true` and add `"runtime"` to the `capabilities` array per SPEC §5.1.
+- **New endpoint:** `GET /drafts/project/bot/logs?limit=<n>&project=<name>` (SAP) or with PAP. Returns `{ok, project, lines:[{at,level,line}], present, has_module, import_error, bot_js_mtime}`.
+- **New endpoint:** `DELETE /drafts/project/bot/logs?project=<name>` clears the ring buffer.
+- **`better-sqlite3@^12`** added as runtime dependency. Native bindings build on `npm install`; ARM64 (Graviton3) and x86_64 both pre-built.
+- **`cron.json` schema unchanged** from v0.9.6: `[{schedule:"*/N * * * *"|"* * * * *", handler:"<name>"}]`. Schedules align to wall-clock minute boundary on startup.
+
+### Protocol drift note
+
+SPEC.md §5.1 still lists `runtime` as `reserved, v2+`. The reference implementation now implements it. Operators of conformant servers MAY ship `runtime` early following the surface documented here; full protocol-level codification is queued for drafts/0.3 alongside the §3 reconciliation already noted in 0.2.1.
+
+## [0.9.6] — 2026-04-27
+
+### Reference implementation
+
+- **`cron.json` minute scheduler** for webhook-mode project bots. Drop `[{"schedule":"*/1 * * * *","handler":"tick"}]` in `live/`, drafts POSTs `{drafts_cron:<handler>, ts}` to the project's `webhook_url` once per matching minute, with header `X-Drafts-Cron-Handler: <handler>`. Schedules supported: `"* * * * *"` and `"*/N * * * *"` (1 ≤ N ≤ 59). Wall-clock-aligned.
+- Cache busted on `POST /drafts/project/bot/sync` and `unlink`.
+
 ## [0.2.1] — 2026-04-25
 
 ### Reference implementation
