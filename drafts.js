@@ -1425,6 +1425,45 @@ app.get('/drafts/project/bot/logs', authPAPorSAP, (req, res) => {
 app.delete('/drafts/project/bot/logs', authPAPorSAP, (req, res) => {
   const p = req.project || findProjectByName(sanitizeName(req.query.project || ''));
   if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+
+// v1.0: runtime status (PAP/SAP)  inspect bot.js / cron.json presence
+app.get('/drafts/project/bot/runtime', authPAPorSAP, async (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.query.project || ''));
+  if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+  const status = await runtime.getRuntimeStatus(p.name);
+  let cron = null;
+  try { cron = projectBotsApi.loadCronJson(p.name); } catch (e) {}
+  res.json({ ok: true, project: p.name, runtime: status, cron });
+});
+
+// v1.0: dispatch a synthetic update into the project's bot.js (PAP/SAP)
+// Useful for local testing without going through Telegram. Body: { update: <Telegram-shaped object> }.
+app.post('/drafts/project/bot/test', authPAPorSAP, async (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.body.project || ''));
+  if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+  const update = (req.body && req.body.update) || { update_id: -1, message: { from: { id: 0 }, text: '/test' } };
+  try {
+    const r = await runtime.handleUpdate(p, update);
+    res.json({ ok: true, project: p.name, dispatched: true, result: r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'runtime_error', detail: String(e && e.message || e) });
+  }
+});
+
+// v1.0: trigger a cron handler manually (PAP/SAP)  same flow as the scheduled tick.
+// Body: { handler: "<name>" }.
+app.post('/drafts/project/bot/cron', authPAPorSAP, async (req, res) => {
+  const p = req.project || findProjectByName(sanitizeName(req.body.project || ''));
+  if (!p) return res.status(400).json({ ok: false, error: 'no_project_context' });
+  const handler = String((req.body && req.body.handler) || 'tick').trim().slice(0, 64);
+  if (!handler) return res.status(400).json({ ok: false, error: 'handler_required' });
+  try {
+    const r = await runtime.handleCron(p, handler);
+    res.json({ ok: true, project: p.name, handler, result: r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'runtime_error', detail: String(e && e.message || e) });
+  }
+});
   runtime.clearLogs(p.name);
   res.json({ ok: true, cleared: true });
 });
