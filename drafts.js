@@ -454,6 +454,7 @@ app.get('/drafts/health', (req, res) => {
     protocol: 'drafts',
     server_number: SERVER_NUMBER,
     telepath_available: TELEPATH_AVAILABLE,
+    runtime_capability: true,
     project_bots_capability: TELEPATH_AVAILABLE,
     telepath: tp,
     project_bots: { total: projectBotsCount, in_webhook_mode: webhookBotsCount, analytics_enabled: analyticsEnabledCount },
@@ -1003,12 +1004,17 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     server_number: SERVER_NUMBER,
     telepath: tpStatus.installed ? { bot_username: tpStatus.bot && tpStatus.bot.username, polling: tpStatus.polling } : { installed: false },
     telepath_available: TELEPATH_AVAILABLE,
+    runtime_capability: true,
     url_scheme: project ? {
       live: `${PUBLIC_BASE}/${project.name}/`,
       version: `${PUBLIC_BASE}/${project.name}/v/<N>/`,
       total_versions: versions.length,
     } : null,
     agent_playbook: playbook,
+    system: 'drafts',
+    protocol: 'drafts',
+    protocol_version: '0.2',
+    capabilities: ['static', 'media', 'git', 'github-sync', 'runtime'],
   };
 
   const title = isSAP ? 'drafts  server' : isPAP ? 'drafts  ' + project.name : 'drafts  ' + project.name + '  contributor';
