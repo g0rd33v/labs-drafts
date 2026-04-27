@@ -29,7 +29,7 @@ import { initTelepath, mountTelepathRoutes, hooks as telepathHooks, getTelepathS
 import { initProjectBots, projectBotsApi } from "./project-bots.js";
 import { startDailySnapshotScheduler } from "./analytics.js";
 
-const VERSION = '0.9.4';
+const VERSION = '0.9.5';
 
 // v0.9.4: detect telepath.js  when present, every project gets bot management automatically
 const TELEPATH_AVAILABLE = (() => {
@@ -463,166 +463,534 @@ app.get('/drafts/health', (req, res) => {
 
 mountTelepathRoutes(app);
 
-// v0.9.2: agent quickstart playbook content per tier
+// =================================================================
+// drafts v0.9.5  buffer-style welcome pages (SAP/PAP/AAP)
+// All UI in this block. Long-form, single-column, no modals.
+// =================================================================
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtSize(n) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(2) + ' MB';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  try { const d = new Date(iso); return d.toISOString().slice(0,10); } catch (e) { return ''; }
+}
+
+// ---------- buffer-style design system (CSS) ----------
+function bufferCSS() {
+  return `<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#000;color:#f5f5f5;font-family:Inter,system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:#a8a8a8;text-decoration:underline;text-decoration-color:rgba(255,255,255,0.18);text-underline-offset:3px}
+a:hover{color:#f5f5f5;text-decoration-color:rgba(255,255,255,0.5)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em;background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:4px;color:#f5f5f5}
+pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:14px 16px;color:#d4d4d4;overflow-x:auto;line-height:1.55;margin:8px 0}
+.wrap{max-width:720px;margin:0 auto;padding:64px 28px 96px}
+.eyebrow{display:flex;align-items:center;gap:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;letter-spacing:0.08em;text-transform:uppercase;color:#a8a8a8;margin-bottom:36px}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:#ea5a2e;flex-shrink:0}
+h1{font-size:54px;font-weight:700;letter-spacing:-0.035em;line-height:1.05;color:#f5f5f5;margin-bottom:24px}
+.lead{font-size:17px;color:#a8a8a8;line-height:1.55;margin-bottom:0;max-width:620px}
+.divider{border-top:1px solid rgba(255,255,255,0.07);margin:48px 0 32px}
+.section{margin-top:32px}
+.section h2{font-size:24px;font-weight:700;letter-spacing:-0.02em;color:#f5f5f5;margin-bottom:18px}
+.section h3{font-size:17px;font-weight:600;color:#f5f5f5;margin:24px 0 10px}
+.section p{font-size:15px;color:#a8a8a8;line-height:1.65;margin-bottom:14px}
+.section p strong{color:#f5f5f5;font-weight:600}
+.section ul{margin:8px 0 14px 0;padding:0;list-style:none}
+.section ul li{font-size:14.5px;color:#a8a8a8;line-height:1.6;padding-left:18px;position:relative;margin-bottom:6px}
+.section ul li::before{content:'';position:absolute;left:0;color:#6a6a6a}
+.steps{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:24px 0}
+@media(max-width:560px){.steps{grid-template-columns:1fr}}
+.step{padding:20px 0 20px 0;padding-right:24px;border-right:1px solid rgba(255,255,255,0.07)}
+.step:nth-child(2n){border-right:none;padding-left:24px;padding-right:0}
+.step:nth-child(2n+1):last-child{border-right:none}
+@media(max-width:560px){.step{border-right:none;border-bottom:1px solid rgba(255,255,255,0.07);padding:16px 0}.step:nth-child(2n){padding-left:0}.step:last-child{border-bottom:none}}
+.step .num{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#ea5a2e;letter-spacing:0.06em;margin-bottom:8px;display:block}
+.step .title{font-size:16px;font-weight:600;color:#f5f5f5;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.step .title svg{width:16px;height:16px;color:#ea5a2e;stroke-width:2}
+.step .desc{font-size:14px;color:#a8a8a8;line-height:1.55}
+.step .desc code{font-size:12.5px}
+.steps-num{margin:24px 0;display:flex;flex-direction:column;gap:24px}
+.steps-num .row{display:grid;grid-template-columns:36px 1fr;gap:16px;align-items:start}
+.steps-num .num{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#ea5a2e;letter-spacing:0.06em;padding-top:5px}
+.steps-num .ttl{font-size:16px;font-weight:600;color:#f5f5f5;margin-bottom:6px}
+.steps-num .body{font-size:14.5px;color:#a8a8a8;line-height:1.6}
+.steps-num .body code{font-size:12.5px}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:7px 13px;border:1px solid rgba(255,255,255,0.12);border-radius:999px;font-size:13px;color:#d4d4d4;background:transparent}
+.pill svg{width:14px;height:14px;color:#a8a8a8;stroke-width:1.8}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid rgba(255,255,255,0.07);border-bottom:1px solid rgba(255,255,255,0.07);margin:24px 0;padding:18px 0}
+.stats .stat{padding:0 18px;border-right:1px solid rgba(255,255,255,0.07)}
+.stats .stat:last-child{border-right:none}
+.stats .label{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:#6a6a6a;margin-bottom:8px}
+.stats .value{font-size:30px;font-weight:600;color:#f5f5f5;letter-spacing:-0.02em;line-height:1}
+.tbl{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+.tbl th{text-align:left;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:#6a6a6a;font-weight:500;padding:10px 8px;border-bottom:1px solid rgba(255,255,255,0.07)}
+.tbl td{padding:14px 8px;border-bottom:1px solid rgba(255,255,255,0.04);color:#d4d4d4}
+.tbl td.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.tbl td.muted{color:#6a6a6a}
+.tbl tr:last-child td{border-bottom:none}
+.tbl a{color:#a8a8a8}
+.pill-state{display:inline-block;padding:2px 9px;border-radius:4px;font-size:11px;font-family:ui-monospace,Menlo,monospace;font-weight:500}
+.pill-state.open{background:rgba(74,222,128,0.15);color:#4ade80}
+.pill-state.draft{background:rgba(168,168,168,0.15);color:#a8a8a8}
+.pill-state.muted{background:rgba(168,168,168,0.08);color:#6a6a6a}
+.info-row{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-top:1px solid rgba(255,255,255,0.07);border-bottom:1px solid rgba(255,255,255,0.07);margin:24px 0}
+.info-row svg{flex-shrink:0;width:18px;height:18px;color:#ea5a2e;margin-top:1px}
+.info-row .text{font-size:14px;color:#a8a8a8;line-height:1.55}
+.cta-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:28px 0}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:8px;font-size:14px;font-weight:500;text-decoration:none;border:1px solid rgba(255,255,255,0.12);color:#f5f5f5;background:transparent;cursor:pointer;font-family:inherit;transition:all 0.15s}
+.btn:hover{border-color:rgba(255,255,255,0.3);background:rgba(255,255,255,0.04)}
+.btn.primary{background:#ea5a2e;border-color:#ea5a2e;color:#fff}
+.btn.primary:hover{background:#d44a2a;border-color:#d44a2a}
+details{margin:28px 0;border-top:1px solid rgba(255,255,255,0.07);padding-top:18px}
+details > summary{cursor:pointer;font-size:14.5px;color:#a8a8a8;list-style:none;display:flex;align-items:center;gap:10px;font-weight:500}
+details > summary::-webkit-details-marker{display:none}
+details > summary::before{content:'';color:#6a6a6a;font-size:16px;display:inline-block;transition:transform 0.15s}
+details[open] > summary::before{transform:rotate(90deg)}
+details > summary:hover{color:#f5f5f5}
+details .body{padding:18px 0 0 24px;font-size:14px;color:#a8a8a8;line-height:1.65}
+details .body p{margin-bottom:10px}
+footer{margin-top:64px;padding-top:24px;border-top:1px solid rgba(255,255,255,0.07);display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#6a6a6a;font-family:ui-monospace,Menlo,monospace}
+footer a{color:#a8a8a8;text-decoration:none}
+footer a:hover{color:#f5f5f5}
+footer .right{display:flex;gap:8px;align-items:center}
+footer .right span{color:#3a3a3a}
+form.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0}
+form.inline input[type=text],form.inline input[type=password]{flex:1;min-width:240px;background:#0a0a0a;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px 12px;color:#f5f5f5;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+form.inline input:focus{outline:none;border-color:rgba(234,90,46,0.5)}
+.status-line{font-size:12.5px;color:#6a6a6a;font-family:ui-monospace,Menlo,monospace;margin-top:8px}
+.status-line.ok{color:#4ade80}
+.status-line.err{color:#f87171}
+.kbd{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:2px 6px;border:1px solid rgba(255,255,255,0.18);border-radius:4px;color:#d4d4d4;background:#0a0a0a}
+.toggle{display:flex;align-items:center;gap:10px;cursor:pointer;padding:12px 0;font-size:14px;color:#d4d4d4}
+.toggle input{accent-color:#ea5a2e}
+.toggle .desc{color:#a8a8a8;font-size:13px;margin-top:2px}
+.upload-area{display:block;width:100%;padding:18px;background:#0a0a0a;border:1px dashed rgba(255,255,255,0.18);border-radius:10px;color:#a8a8a8;font-family:inherit;font-size:13px;cursor:pointer;margin:10px 0;text-align:center}
+.upload-area:hover{border-color:rgba(255,255,255,0.3);color:#f5f5f5}
+textarea{width:100%;background:#0a0a0a;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:12px;color:#f5f5f5;font-family:inherit;font-size:14px;line-height:1.5;resize:vertical;min-height:80px}
+textarea:focus{outline:none;border-color:rgba(234,90,46,0.5)}
+</style>`;
+}
+
+// ---------- inline icons (small, stroke 2) ----------
+const I = {
+  arrowDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
+  arrowUpRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>',
+  arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+  bot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+  zap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+  layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+  image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+  database: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>',
+  command: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></svg>',
+};
+
+// =================================================================
+// Per-tier hero content
+// =================================================================
+function heroContent(tier, project, versions, publicBase) {
+  if (tier === 'sap') {
+    return {
+      eyebrowText: 'DRAFTS  SERVER ROOT',
+      h1: 'Root key to the drafts server.',
+      lead: 'You hold the master key. From here you create projects, mint contributor links, attach a Telegram bot to anything, and watch the whole server in one pane. Everything below is also callable as JSON.',
+    };
+  }
+  if (tier === 'pap') {
+    const verCount = versions.length;
+    const verWord = verCount === 1 ? 'version' : 'versions';
+    return {
+      eyebrowText: 'DRAFTS  ' + project.name.toUpperCase(),
+      h1: project.description ? project.description : project.name + '  a project on drafts.',
+      lead: 'Your project. Live at <a href="' + publicBase + '/' + project.name + '/" target="_blank">' + publicBase.replace(/^https?:\/\//,'') + '/' + project.name + '/</a>. ' + verCount + ' ' + verWord + ' published. Build, ship, invite contributors, attach a Telegram bot  all from this link.',
+    };
+  }
+  // AAP
+  return {
+    eyebrowText: 'DRAFTS  ' + project.name.toUpperCase() + '  CONTRIBUTOR',
+    h1: 'Your branch on ' + project.name + '.',
+    lead: 'A contributor link. What you commit lands in your own branch  the project owner reviews and merges. The live site is at <a href="' + publicBase + '/' + project.name + '/" target="_blank">' + publicBase.replace(/^https?:\/\//,'') + '/' + project.name + '/</a>. Read it before you build.',
+  };
+}
+
+// =================================================================
+// Step blocks (numbered) per tier
+// =================================================================
+function stepsForTier(tier, project, apiBase) {
+  if (tier === 'sap') {
+    return [
+      { title: 'Create a project', desc: 'A project gets its own slug, its own PAP link, its own live URL at /<slug>/, and its own git history.', code: 'POST ' + apiBase + '/projects {"name":"my-app","description":"..."}' },
+      { title: 'Share the PAP', desc: 'The PAP activation URL is what your collaborators or agents open. Never share the SAP  it\'s root.' },
+      { title: 'Attach Telepath', desc: 'One bot for the server. Get a token from <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, paste below.', code: 'PUT ' + apiBase + '/tap {"token":"..."}' },
+      { title: 'Watch everything', desc: 'GET /server/stats summarizes projects, bots, GitHub config, autopilot jobs in one call.' },
+    ];
+  }
+  if (tier === 'pap') {
+    return [
+      { title: 'Build', desc: 'Upload files into drafts. HTML, CSS, JS, images, audio, PDFs  anything. Each upload is a regular git tree change.', code: 'POST ' + apiBase + '/upload {"filename":"index.html","content":"..."}' },
+      { title: 'Commit', desc: 'Every commit on main produces an immutable snapshot at /v/<N>/. Versions never get rewritten.', code: 'POST ' + apiBase + '/commit {"message":"..."}' },
+      { title: 'Promote', desc: 'Publish drafts to live. The world can now see it at /<project>/. Roll back any time.', code: 'POST ' + apiBase + '/promote' },
+      { title: 'Iterate', desc: 'Loop. Keep commits small and named. Use AAPs to bring contributors in without sharing the project key.' },
+    ];
+  }
+  // AAP
+  return [
+    { title: 'Read live', desc: 'Open the live URL. Understand what\'s already there before you change anything.' },
+    { title: 'Build in your branch', desc: 'Every upload and commit lands on your branch automatically. You can\'t affect main directly.', code: 'POST ' + apiBase + '/upload {"filename":"...","content":"..."}' },
+    { title: 'Commit', desc: 'Make small, named commits. The owner sees them in /pending.', code: 'POST ' + apiBase + '/commit {"message":"..."}' },
+    { title: 'Hand off', desc: 'Tell the owner you\'re done. They run /merge and your work flows into main + becomes a version.' },
+  ];
+}
+
+function renderSteps(steps) {
+  let html = '<div class="steps-num">';
+  steps.forEach((s, i) => {
+    const num = String(i + 1).padStart(2, '0');
+    const codeHtml = s.code ? '<pre>' + esc(s.code) + '</pre>' : '';
+    html += '<div class="row"><div class="num">' + num + '</div><div><div class="ttl">' + s.title + '</div><div class="body">' + s.desc + codeHtml + '</div></div></div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+// =================================================================
+// Pills: "What you can do here" / "What you can build"
+// =================================================================
+function pillsForTier(tier) {
+  if (tier === 'sap') {
+    return [
+      { ic: 'layers', t: 'create projects' },
+      { ic: 'users', t: 'mint contributor passes' },
+      { ic: 'bot', t: 'attach a master Telegram bot' },
+      { ic: 'database', t: 'wire GitHub auto-sync' },
+      { ic: 'globe', t: 'manage every live URL' },
+      { ic: 'zap', t: 'queue autopilot jobs' },
+      { ic: 'code', t: 'configure auto-update' },
+    ];
+  }
+  if (tier === 'pap') {
+    return [
+      { ic: 'globe', t: 'landing pages' },
+      { ic: 'image', t: 'image-rich pages' },
+      { ic: 'code', t: 'PWAs and tools' },
+      { ic: 'file', t: 'multi-page sites' },
+      { ic: 'bot', t: 'a Telegram bot tied to the page' },
+      { ic: 'send', t: 'broadcasts to subscribers' },
+      { ic: 'users', t: 'collaborators' },
+      { ic: 'layers', t: 'rollback-able versions' },
+    ];
+  }
+  return [
+    { ic: 'globe', t: 'static pages' },
+    { ic: 'image', t: 'media' },
+    { ic: 'code', t: 'small interactive widgets' },
+    { ic: 'file', t: 'docs and copy edits' },
+  ];
+}
+
+function renderPills(pills) {
+  return '<div class="pills">' + pills.map(p => '<span class="pill">' + (I[p.ic] || '') + p.t + '</span>').join('') + '</div>';
+}
+
+// =================================================================
+// Telepath section content (rich, embedded on PAP/SAP)
+// =================================================================
+function telepathSectionPAP(project, apiBase, publicBase) {
+  const liveUrl = publicBase + '/' + project.name + '/';
+  const botStatus = (project.bot && project.bot.token) ? 'attached' : 'unattached';
+  const botUsername = project.bot && project.bot.bot_username ? '@' + project.bot.bot_username : '';
+  const mode = project.bot && project.bot.token ? (project.bot.webhook_url ? 'webhook' : 'default') : null;
+
+  let statusBlock;
+  if (botStatus === 'attached') {
+    statusBlock =
+      '<div class="info-row">' + I.bot + '<div class="text">A Telegram bot is attached: <strong style="color:#4ade80">' + esc(botUsername) + '</strong> running in <strong>' + mode + '</strong> mode. Subscribers: ' + ((project.bot.subscribers||[]).length) + '. Last synced: ' + fmtDate(project.bot.last_synced_at) + '.</div></div>';
+  } else {
+    statusBlock =
+      '<form class="inline" id="bot-attach-form" onsubmit="return false"><input type="password" id="bot-token-input" placeholder="1234567890:AA... (paste from @BotFather)"/><button class="btn primary" type="button" id="bot-attach-btn">Attach bot</button></form>' +
+      '<div class="status-line" id="bot-attach-status">Need a bot first? Open <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, send <code>/newbot</code>, paste the token above.</div>';
+  }
+
+  const exampleBotJson = JSON.stringify({
+    version: 'drafts.bot.v1',
+    commands: [
+      { command: 'start', description: 'Begin', reply: { text: '<b>Welcome to ' + project.name + '!</b>Tap below to open the app.', parse_mode: 'HTML', buttons: [[{ text: 'Open app', web_app_url: liveUrl }, { text: 'Help', callback_data: 'help' }]] } },
+      { command: 'about', description: 'About', reply: { text: 'Built with drafts.' } },
+    ],
+    default_reply: { text: 'Send /start to see the menu.' },
+    callbacks: { help: { text: 'Send /start for the menu.' } },
+  }, null, 2);
+
+  return `
+<div class="divider"></div>
+<div class="section">
+  <h2>Telepath  a Telegram bot tied to this project</h2>
+  <p>Telepath turns this project into a real Telegram bot. The bot's name, description, menu button, and commands all come from your live site  ship the page, the bot ships with it. Three modes, escalating in power:</p>
+
+  ${statusBlock}
+
+  <h3>Default mode  zero config</h3>
+  <p>The moment you attach a bot it works. <code>/start</code> subscribes the user, <code>/stop</code> unsubscribes, and you can <strong>broadcast</strong> to all subscribers from a single API call. The bot's name, short and long descriptions are pulled from <code>&lt;title&gt;</code> and <code>&lt;meta name=description&gt;</code> on your live page. Its menu button opens <a href="${liveUrl}" target="_blank">${liveUrl}</a> as a Telegram WebApp.</p>
+
+  <h3>bot.json mode  declarative bot, no code</h3>
+  <p>Drop a <code>bot.json</code> file into your project root and commit. The bot reads it and becomes whatever you described  commands with rich HTML replies, inline-keyboard buttons (URL, callback, WebApp), and a callback dispatch table. Edit the file, promote, sync  the bot updates instantly. Cache busts on each sync; <code>setMyCommands</code> pushes the command list to Telegram automatically.</p>
+  <pre>${esc(exampleBotJson)}</pre>
+  <p>Each <code>buttons</code> row is an inline keyboard row. Buttons accept <code>url</code> for external links, <code>callback_data</code> for callback dispatch, and <code>web_app_url</code> to open a Telegram WebApp pointing at your live URL.</p>
+
+  <h3>Webhook mode  you own the logic</h3>
+  <p>Set <code>webhook_url</code> on the bot and drafts becomes a pipe. Every Telegram update is forwarded to your server with <code>X-Drafts-Project</code>, <code>X-Drafts-Update-Id</code>, <code>X-Drafts-Bot-Username</code> headers. Your server replies via the regular Telegram Bot API using your token. SSRF-safe (no localhost, no private IPs, no your-own-drafts-server). One automatic retry, last-20-deliveries log retained.</p>
+
+  <h3>Analytics</h3>
+  <p>Every update is recorded as JSONL metadata (no message bodies, no PII) and aggregated into daily snapshots. Toggle off if you don't want the data. Available across all three modes.</p>
+
+  <h3>What you can build with this</h3>
+  <ul>
+    <li>A WebApp launcher  the menu button opens your live site fullscreen inside Telegram, every visitor automatically gets your <code>tg.initData</code> for auth.</li>
+    <li>A subscription channel  users <code>/start</code> to subscribe, you broadcast new content the moment you commit + promote.</li>
+    <li>A command-driven assistant  declare 8 commands in <code>bot.json</code>, each replies with HTML + inline buttons. No backend.</li>
+    <li>A custom backend  webhook mode, full Bot API in your hands. Drafts handles polling, retries, logging.</li>
+    <li>A multi-step flow  callbacks branch into other replies; chain them via <code>callback_data</code> keys.</li>
+  </ul>
+
+  <h3>Bot management API</h3>
+  <p>All endpoints below take Bearer auth with this project's PAP token.</p>
+  <pre>GET    ${apiBase}/project/bot                  status
+PUT    ${apiBase}/project/bot                  attach  {token, webhook_url?}
+DELETE ${apiBase}/project/bot                  disconnect
+POST   ${apiBase}/project/bot/sync             re-sync profile + bust bot.json cache
+PUT    ${apiBase}/project/bot/webhook          {url} or {url:null}
+PUT    ${apiBase}/project/bot/analytics        {enabled:true|false}
+POST   ${apiBase}/project/bot/broadcast        {html}</pre>
+</div>`;
+}
+
+function telepathSectionSAP(tpStatus, apiBase) {
+  const installed = tpStatus.installed && tpStatus.bot;
+  let statusBlock;
+  if (installed) {
+    statusBlock = '<div class="info-row">' + I.bot + '<div class="text">Master bot connected: <strong style="color:#4ade80">@' + esc(tpStatus.bot.username) + '</strong>. Polling: <strong>' + (tpStatus.polling?'on':'off') + '</strong>. Open <a href="https://t.me/' + esc(tpStatus.bot.username) + '" target="_blank">@' + esc(tpStatus.bot.username) + '</a> in Telegram, send <code>/start</code> to begin. Inside the bot, <code>/projects</code> lists everything on this server.</div></div>' +
+      '<form class="inline" onsubmit="return false"><button class="btn" type="button" id="tap-revoke-btn">Revoke master bot</button></form>';
+  } else {
+    statusBlock =
+      '<form class="inline" id="tap-form" onsubmit="return false"><input type="password" id="tap-token-input" placeholder="1234567890:AA... (paste from @BotFather)"/><button class="btn primary" type="button" id="tap-install-btn">Connect master bot</button></form>' +
+      '<div class="status-line" id="tap-status">Need a bot first? Open <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, send <code>/newbot</code>, paste the token above.</div>';
+  }
+  return `
+<div class="divider"></div>
+<div class="section">
+  <h2>Telepath  the master Telegram bot</h2>
+  <p>One bot per server. From any Telegram client  phone, desktop, voice notes  you list projects, push files, promote builds, mint AAPs, view stats, all in DM. The master bot is separate from per-project bots: this one is yours, the per-project ones serve users.</p>
+  ${statusBlock}
+
+  <h3>What the master bot does</h3>
+  <ul>
+    <li><code>/projects</code>  list every project on the server with live URLs and version count.</li>
+    <li><code>/sites</code>  BotFather-style menu for managing per-project bots.</li>
+    <li>Voice notes  send a voice note describing a change, the bot turns it into a commit message and pushes via the relevant PAP.</li>
+    <li>File drops  forward a file to the bot, pick the project, it lands in drafts.</li>
+    <li>Notifications  server boot, version bumps, schema migrations, AAP merges, drafts errors all show up here.</li>
+  </ul>
+
+  <h3>What you can build on top of Telepath</h3>
+  <ul>
+    <li>A mobile-first dev console  ship from any device that can open Telegram.</li>
+    <li>A team status feed  add the bot to a group chat, every promote notifies the room.</li>
+    <li>Voice-driven content updates  dictate a paragraph, it lands as a commit.</li>
+    <li>An on-call channel  errors and version bumps DM you immediately.</li>
+  </ul>
+</div>`;
+}
+
+// =================================================================
+// Stats grid + recent versions table (PAP)
+// =================================================================
+function statsBlock(project, versions) {
+  const verCount = versions.length;
+  const aapCount = (project.aaps || []).filter(a => !a.revoked).length;
+  const botMode = project.bot && project.bot.token ? (project.bot.webhook_url ? 'webhook' : 'default') : 'none';
+  return `<div class="stats">
+    <div class="stat"><div class="label">Versions</div><div class="value">${verCount}</div></div>
+    <div class="stat"><div class="label">Contributors</div><div class="value">${aapCount}</div></div>
+    <div class="stat"><div class="label">Bot mode</div><div class="value" style="font-size:18px;font-family:ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:0.05em">${botMode}</div></div>
+  </div>`;
+}
+
+// =================================================================
+// Server stats (SAP)  projects table
+// =================================================================
+function projectsTable(state, publicBase) {
+  if (!state.projects || !state.projects.length) {
+    return '<p style="color:#6a6a6a;font-size:14px;padding:24px 0">No projects yet. Create the first one with <code>POST /drafts/projects</code>.</p>';
+  }
+  let html = '<table class="tbl"><thead><tr><th>Name</th><th>Versions</th><th>Bot</th><th>Live</th></tr></thead><tbody>';
+  for (const p of state.projects) {
+    const verCount = p.versions_count || 0;
+    const bot = p.bot && p.bot.token ? (p.bot.webhook_url ? 'webhook' : 'default') : '';
+    const liveUrl = publicBase + '/' + p.name + '/';
+    html += '<tr><td class="mono">' + esc(p.name) + '</td><td class="muted mono">' + verCount + '</td><td class="muted mono">' + bot + '</td><td><a href="' + liveUrl + '" target="_blank">view</a></td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function serverStatsBlock(state) {
+  const total = state.projects.length;
+  const withBot = state.projects.filter(p => p.bot && p.bot.token).length;
+  const autosync = state.projects.filter(p => p.github_autosync).length;
+  return `<div class="stats">
+    <div class="stat"><div class="label">Projects</div><div class="value">${total}</div></div>
+    <div class="stat"><div class="label">With bot</div><div class="value">${withBot}</div></div>
+    <div class="stat"><div class="label">Auto-syncing</div><div class="value">${autosync}</div></div>
+  </div>`;
+}
+
+// =================================================================
+// Versions table (PAP)
+// =================================================================
+function versionsTable(project, versions, publicBase) {
+  if (!versions || !versions.length) {
+    return '<p style="color:#6a6a6a;font-size:14px;padding:14px 0">No versions yet. <code>POST /commit</code> on main to create the first one.</p>';
+  }
+  const recent = versions.slice(-8).reverse();
+  let html = '<table class="tbl"><thead><tr><th>Version</th><th>State</th><th>URL</th></tr></thead><tbody>';
+  const latest = versions[versions.length - 1];
+  for (const N of recent) {
+    const isLive = N === latest;
+    const url = publicBase + '/' + project.name + '/v/' + N + '/';
+    html += '<tr><td class="mono">v' + N + '</td><td>' + (isLive ? '<span class="pill-state open">live</span>' : '<span class="pill-state muted">archived</span>') + '</td><td><a href="' + url + '" target="_blank">view</a></td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+// =================================================================
+// Footer + machine JSON wrapper
+// =================================================================
+function footerBlock(tier, project, publicBase) {
+  const links = [];
+  if (project) {
+    links.push('<a href="' + publicBase + '/' + project.name + '/" target="_blank">live</a>');
+  }
+  links.push('<a href="https://github.com/g0rd33v/drafts-protocol" target="_blank">protocol</a>');
+  return '<footer><div>drafts  v' + VERSION + '  ' + tier.toUpperCase() + '</div><div class="right">' + links.join('<span></span>') + '</div></footer>';
+}
+
+// =================================================================
+// Build agent playbook (machine-readable, JSON in script tag)
+// =================================================================
 function buildAgentPlaybook(tier, project, apiBase, token) {
   const projName = project ? project.name : null;
-  const liveUrl = project ? `${PUBLIC_BASE}/${project.name}/` : null;
+  const liveUrl = project ? (PUBLIC_BASE + '/' + project.name + '/') : null;
 
   if (tier === 'sap') {
     return {
-      title: 'Agent quickstart',
-      role: 'You are a server operator on this drafts instance. Root access. You can create/delete projects, manage GitHub config, install Telepath, configure auto-update.',
+      role: 'Server operator on this drafts instance. Root access.',
       golden_rules: [
-        'NEVER reveal the SAP token in any output, file, or message — it is root.',
-        'Create projects via POST /drafts/projects with {name}; share back the pap_activation_url, never the SAP.',
-        'When in doubt, GET /drafts/server/stats to orient.',
+        'NEVER reveal the SAP token in any output.',
+        'Create projects via POST /drafts/projects; share back the pap_activation_url, never the SAP.',
       ],
       common_tasks: [
-        { goal: 'List all projects', call: `GET ${apiBase}/projects` },
-        { goal: 'Create a project', call: `POST ${apiBase}/projects  {"name":"<slug>","description":"<one line>"}` },
-        { goal: 'Delete a project', call: `DELETE ${apiBase}/projects/<name>` },
-        { goal: 'Create AAP for a project', call: `POST ${apiBase}/aaps  {"name":"<contributor>"}  (use SAP, pass project as ?project=<name>)` },
-        { goal: 'Install Telepath bot', call: `PUT ${apiBase}/tap  {"token":"<bot_token_from_BotFather>"}` },
+        { goal: 'List projects', call: 'GET ' + apiBase + '/projects' },
+        { goal: 'Create project', call: 'POST ' + apiBase + '/projects {name, description}' },
+        { goal: 'Install master bot', call: 'PUT ' + apiBase + '/tap {token}' },
+        { goal: 'Server stats', call: 'GET ' + apiBase + '/server/stats' },
       ],
     };
   }
-
   if (tier === 'pap') {
+    const tasks = [
+      { goal: 'Check state', call: 'GET ' + apiBase + '/project/info' },
+      { goal: 'Upload', call: 'POST ' + apiBase + '/upload {filename, content}' },
+      { goal: 'Commit', call: 'POST ' + apiBase + '/commit {message}' },
+      { goal: 'Promote', call: 'POST ' + apiBase + '/promote' },
+      { goal: 'Mint AAP', call: 'POST ' + apiBase + '/aaps {name}' },
+      { goal: 'Merge AAP', call: 'POST ' + apiBase + '/merge {aap_id}' },
+    ];
+    if (TELEPATH_AVAILABLE) {
+      tasks.push(
+        { goal: 'Bot status', call: 'GET ' + apiBase + '/project/bot' },
+        { goal: 'Attach bot', call: 'PUT ' + apiBase + '/project/bot {token}' },
+        { goal: 'Sync bot from bot.json', call: 'POST ' + apiBase + '/project/bot/sync' },
+        { goal: 'Webhook mode', call: 'PUT ' + apiBase + '/project/bot/webhook {url}' },
+        { goal: 'Broadcast', call: 'POST ' + apiBase + '/project/bot/broadcast {html}' },
+      );
+    }
     return {
-      title: 'Agent quickstart',
-      role: `You are the project agent for "${projName}". You build, ship, invite contributors, and publish to live. Live URL is ${liveUrl}.`,
+      role: `Project agent for "${projName}". Build, ship, invite contributors. Live at ${liveUrl}.`,
       golden_rules: [
-        'Default workflow: upload → commit → promote. Promote means "publish to live."',
-        `Live URL is ${liveUrl} — share this when someone asks "where is the site?"`,
-        'Every commit on main produces an immutable snapshot at /v/<N>/. Versions are forever.',
-        'For collaborative work, mint AAPs (POST /aaps) and share the activation_url. Never share the PAP itself.',
-        ...(TELEPATH_AVAILABLE ? ['Telepath is available on this server: every project can attach its own Telegram bot. Configure behavior by uploading bot.json to project root, then sync.'] : []),
+        'Workflow: upload  commit  promote.',
+        'Each commit on main is an immutable snapshot at /v/<N>/.',
+        'Mint AAPs for collaborators; never share PAP.',
+        ...(TELEPATH_AVAILABLE ? ['Telepath available: every project can attach its own Telegram bot via bot.json.'] : []),
       ],
-      common_tasks: [
-        { goal: 'Check current state', call: `GET ${apiBase}/project/info  +  GET ${apiBase}/files` },
-        { goal: 'Add or update a file', call: `POST ${apiBase}/upload  {"filename":"index.html","content":"<html>..."}` },
-        { goal: 'Add a binary (image/pdf)', call: `POST ${apiBase}/upload  {"filename":"hero.png","content_b64":"<base64>"}` },
-        { goal: 'Commit changes', call: `POST ${apiBase}/commit  {"message":"add hero"}` },
-        { goal: 'Publish to live', call: `POST ${apiBase}/promote` },
-        { goal: 'Roll back to a version', call: `POST ${apiBase}/rollback  {"commit_or_version":"3"}` },
-        { goal: 'Invite a contributor', call: `POST ${apiBase}/aaps  {"name":"alice"}  → share activation_url` },
-        { goal: 'Review pending AAP work', call: `GET ${apiBase}/pending` },
-        { goal: 'Merge an AAP branch', call: `POST ${apiBase}/merge  {"aap_id":"<id>"}` },
-        ...(TELEPATH_AVAILABLE ? [
-          { goal: 'Check bot status', call: `GET ${apiBase}/project/bot` },
-          { goal: 'Attach a Telegram bot', call: `PUT ${apiBase}/project/bot  {"token":"<bot_token_from_BotFather>"}` },
-          { goal: 'Configure bot via bot.json', call: `POST ${apiBase}/upload  {"filename":"bot.json","content":"<json>"}  →  /commit  →  /promote  →  POST ${apiBase}/project/bot/sync` },
-          { goal: 'Sync bot profile from live', call: `POST ${apiBase}/project/bot/sync` },
-          { goal: 'Switch bot to webhook mode', call: `PUT ${apiBase}/project/bot/webhook  {"url":"https://your.server/hook"}` },
-          { goal: 'Broadcast to subscribers', call: `POST ${apiBase}/project/bot/broadcast  {"html":"<b>Hello</b>"}` },
-          { goal: 'Disconnect the bot', call: `DELETE ${apiBase}/project/bot` },
-        ] : []),
-      ],
-      build_loop: 'Plan → upload → commit → promote → check live URL → iterate. Keep commits small and named.',
-      bot_capability_note: TELEPATH_AVAILABLE ? 'This server has telepath.js  every project can attach a Telegram bot. Configure via bot.json in the project root, or via webhook mode.' : null,
+      common_tasks: tasks,
+      build_loop: 'Plan  upload  commit  promote  verify live  iterate.',
       bot_json_schema: TELEPATH_AVAILABLE ? {
-        notes: 'Place bot.json at project root. After upload + commit + promote, call POST /drafts/project/bot/sync to push commands to Telegram and bust the bot.json cache. The bot reads bot.json from <project>/live/bot.json.',
+        notes: 'Place bot.json at project root. After upload + commit + promote, call POST /drafts/project/bot/sync.',
         example: {
           version: 'drafts.bot.v1',
           commands: [
-            { command: 'start', description: 'Begin', reply: { text: '<b>Welcome!</b>', parse_mode: 'HTML', buttons: [[{ text: 'Open site', url: liveUrl }, { text: 'Help', callback_data: 'help' }]] } },
-            { command: 'about', description: 'About this project', reply: { text: 'A project on drafts.' } },
+            { command: 'start', description: 'Begin', reply: { text: '<b>Welcome!</b>', parse_mode: 'HTML', buttons: [[{ text: 'Open', web_app_url: liveUrl }]] } },
           ],
-          default_reply: { text: 'Use /start to see the menu.' },
-          callbacks: { help: { text: 'Send /start to see the menu, /about for info.' } },
+          default_reply: { text: 'Send /start.' },
+          callbacks: {},
         },
       } : null,
     };
   }
-
-  // AAP
   return {
-    title: 'Agent quickstart',
-    role: `You are a contributor agent on "${projName}". You work in your own branch; the project owner reviews and merges. You cannot promote to live yourself.`,
+    role: `Contributor agent on "${projName}". Work in your own branch.`,
     golden_rules: [
-      'All your changes go to your own branch automatically. You cannot affect main directly.',
-      'Upload files, commit, then tell the project owner you are ready for review.',
-      'Read the live site for context before proposing changes.',
+      'All your commits go to your branch automatically.',
+      'Owner runs /merge to bring your work into main.',
     ],
     common_tasks: [
-      { goal: 'See current live state', call: `GET ${liveUrl}` },
-      { goal: 'See what is in your branch', call: `GET ${apiBase}/files` },
-      { goal: 'Add or update a file', call: `POST ${apiBase}/upload  {"filename":"about.html","content":"..."}` },
-      { goal: 'Commit your changes', call: `POST ${apiBase}/commit  {"message":"<what changed>"}` },
-      { goal: 'See your branch history', call: `GET ${apiBase}/history` },
+      { goal: 'Read live', call: 'GET ' + liveUrl },
+      { goal: 'Upload', call: 'POST ' + apiBase + '/upload {filename, content}' },
+      { goal: 'Commit', call: 'POST ' + apiBase + '/commit {message}' },
+      { goal: 'See your history', call: 'GET ' + apiBase + '/history' },
     ],
-    handoff: 'When done: tell the project owner you have N pending commits in your branch. They will run /merge to bring it into main.',
+    handoff: 'When done, tell the owner. They run /merge.',
   };
 }
 
-function renderAgentPlaybookHTML(playbook, tier) {
-  const tasks = playbook.common_tasks.map(t =>
-    '<div class="agent-task"><div class="agent-task-goal">' + t.goal + '</div><code class="agent-task-call">' + t.call.replace(/</g,'&lt;') + '</code></div>'
-  ).join('');
-  const rules = playbook.golden_rules.map(r => '<li>' + r + '</li>').join('');
-  const extras = (playbook.build_loop || playbook.handoff)
-    ? '<div class="agent-extra"><strong>Loop:</strong> ' + (playbook.build_loop || playbook.handoff) + '</div>'
-    : '';
-  const botJsonHtml = playbook.bot_json_schema
-    ? '<div class="agent-section-title">bot.json schema (Telegram bot config)</div>' +
-      '<p style="font-size:12.5px;color:var(--text-2);line-height:1.55;margin-bottom:8px">' + playbook.bot_json_schema.notes + '</p>' +
-      '<pre class="agent-botjson">' + JSON.stringify(playbook.bot_json_schema.example, null, 2).replace(/</g,"&lt;") + '</pre>'
-    : '';
+// Stub for old call site (renderTapSection used to render its own panel inline)
+function renderTapSection() { return ''; }
+function renderAgentPlaybookHTML() { return ''; }
 
-  return `
-    <div class="v9-section agent-playbook">
-      <h3>${playbook.title} <span class="badge2">for the agent reading this page</span></h3>
-      <p style="font-size:13.5px;color:var(--text);line-height:1.55;margin-bottom:14px"><strong>Your role:</strong> ${playbook.role}</p>
-      <div class="agent-rules">
-        <div class="agent-section-title">Golden rules</div>
-        <ul>${rules}</ul>
-      </div>
-      <div class="agent-tasks">
-        <div class="agent-section-title">Common tasks</div>
-        ${tasks}
-      </div>
-      ${extras}
-      ${botJsonHtml}
-      <div class="agent-howto">
-        <div class="agent-section-title">How to use this link</div>
-        <p>Open this page in <a href="${CHROME_EXT_URL}" target="_blank">Claude for Chrome</a> sidepanel — Claude reads everything below (including the JSON instructions) and starts acting as the ${tier.toUpperCase()} agent. Or paste the URL into any Claude chat (web, Desktop, Code) and it will fetch this page and pick up the same context.</p>
-      </div>
-    </div>
-    <style>
-      .agent-playbook .agent-section-title{font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);margin:14px 0 8px 0}
-      .agent-playbook ul{margin:0;padding-left:18px;color:var(--text-2);font-size:13px;line-height:1.65}
-      .agent-playbook ul li{margin-bottom:5px}
-      .agent-playbook .agent-task{padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;margin-bottom:6px}
-      .agent-playbook .agent-task-goal{font-size:12.5px;color:var(--text);font-weight:600;margin-bottom:4px}
-      .agent-playbook .agent-task-call{display:block;font-family:var(--mono,ui-monospace,Menlo,monospace);font-size:11.5px;color:var(--text-2);background:transparent;word-break:break-all;line-height:1.5}
-      .agent-playbook .agent-extra{margin-top:14px;padding:10px 12px;background:rgba(96,165,250,0.06);border-left:2px solid #60a5fa;border-radius:0 6px 6px 0;font-size:12.5px;color:var(--text-2);line-height:1.55}
-      .agent-playbook .agent-howto{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
-      .agent-playbook .agent-howto p{font-size:12.5px;color:var(--text-2);line-height:1.55;margin:0}
-      .agent-playbook .agent-botjson{display:block;background:rgba(0,0,0,0.5);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:11.5px;font-family:var(--mono,ui-monospace,Menlo,monospace);color:var(--text-2);overflow-x:auto;line-height:1.5;margin-bottom:12px}
-    </style>
-  `;
-}
-
+// =================================================================
+// Main renderPage  buffer-style, single column, long-form
+// =================================================================
 function renderPage({ tier, token, project, aap, versions = [] }) {
   const isSAP = tier === 'sap';
   const isPAP = tier === 'pap';
   const isAAP = tier === 'aap';
-
-  const roleBadge = isSAP ? 'SAP — server' : isPAP ? `PAP — ${project.name}` : `AAP — ${project.name}`;
-  const title     = isSAP ? 'drafts · server link' : isPAP ? `drafts · ${project.name} (project link)` : `drafts · ${project.name} (agent link)`;
-  const apiBase   = PUBLIC_BASE + '/drafts';
-  const liveUrl   = project ? `${PUBLIC_BASE}/${project.name}/` : null;
-  const latestVersion = versions.length ? versions[versions.length - 1] : null;
-  const latestVersionUrl = (project && latestVersion) ? `${PUBLIC_BASE}/${project.name}/v/${latestVersion}/` : null;
-
-  const tierWord = tier === "pap" ? "project" : tier === "aap" ? "agent" : tier === "sap" ? "server" : tier;
-  const cleanTok = token.replace(/^(pap|aap)_/, "");
+  const apiBase = PUBLIC_BASE + '/drafts';
+  const tierWord = isPAP ? 'project' : isAAP ? 'agent' : 'server';
+  const cleanTok = token.replace(/^(pap|aap)_/, '');
   const portableId = `${PUBLIC_BASE}/drafts/pass/drafts_${tierWord}_${SERVER_NUMBER}_${cleanTok}`;
-
   const tpStatus = getTelepathStatus();
-
-  // v0.9.2: structured playbook for the agent
   const playbook = buildAgentPlaybook(tier, project, apiBase, token);
+  const hero = heroContent(tier, project, versions, PUBLIC_BASE);
+  const steps = stepsForTier(tier, project, apiBase);
+  const pills = pillsForTier(tier);
 
   const machine = {
     system: 'drafts',
@@ -632,280 +1000,139 @@ function renderPage({ tier, token, project, aap, versions = [] }) {
     auth: { header: 'Authorization', scheme: 'Bearer', token },
     portable_identifier: portableId,
     server_number: SERVER_NUMBER,
-    registry_url: 'https://github.com/g0rd33v/drafts-protocol/blob/main/drafts-registry.json',
-    public_gallery: PUBLIC_BASE + '/',
-    telepath: tpStatus.installed ? { bot_username: tpStatus.bot?.username, polling: tpStatus.polling } : { installed: false },
+    telepath: tpStatus.installed ? { bot_username: tpStatus.bot && tpStatus.bot.username, polling: tpStatus.polling } : { installed: false },
+    telepath_available: TELEPATH_AVAILABLE,
     url_scheme: project ? {
       live: `${PUBLIC_BASE}/${project.name}/`,
-      live_file: `${PUBLIC_BASE}/${project.name}/<path>`,
       version: `${PUBLIC_BASE}/${project.name}/v/<N>/`,
-      version_file: `${PUBLIC_BASE}/${project.name}/v/<N>/<path>`,
-      latest_version_number: latestVersion,
       total_versions: versions.length,
-    } : null,
-    what_this_link_is: isSAP
-      ? 'SERVER API PASS for drafts. Root access. Treat this token as root; never share it in any output.'
-      : isPAP
-      ? `PROJECT API PASS for "${project.name}" on drafts. Live at ${PUBLIC_BASE}/${project.name}/. Each commit produces an immutable snapshot at /v/<N>/.`
-      : `AGENT API PASS for "${project.name}". Changes land in your own branch; owner reviews and publishes.`,
-    conversation_tone: { mode: 'friendly, builder-energy', emoji_policy: 'sparing', response_length: 'short' },
-    on_first_load: { summary: project ? `Check ${apiBase}/project/info + files + history and greet based on state.` : 'Greet warmly, offer overview.' },
-    transport: 'Try built-in HTTP tools first; on failure switch to Claude for Chrome silently.',
-    capabilities: isSAP ? ['list_projects','create_project','delete_project','revoke_passes','configure_github_default','manage_telepath_bot']
-      : isPAP ? (TELEPATH_AVAILABLE ? ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','github_autosync','attach_telegram_bot','set_bot_webhook_url','sync_bot_from_botjson','broadcast_to_subscribers','view_bot_analytics'] : ['build','publish','invite_aaps','merge','rollback_to_version','github_sync','github_autosync'])
-      : ['build_in_branch','read_live','read_history'],
-    endpoints: isSAP ? [
-      { method: 'GET', path: '/projects' },
-      { method: 'POST', path: '/projects', body: '{name, description?, github_repo?}' },
-      { method: 'DELETE', path: '/projects/:name' },
-      { method: 'GET', path: '/tap' },
-      { method: 'PUT', path: '/tap', body: '{token}' },
-      { method: 'DELETE', path: '/tap' },
-    ] : isPAP ? [
-      { method: 'GET', path: '/project/info' },
-      { method: 'GET', path: '/project/versions' },
-      { method: 'POST', path: '/upload', body: '{filename, content}' },
-      { method: 'POST', path: '/commit', body: '{message?}' },
-      { method: 'POST', path: '/promote' },
-      { method: 'POST', path: '/rollback', body: '{commit_or_version}' },
-      { method: 'POST', path: '/aaps', body: '{name?}' },
-      { method: 'POST', path: '/merge', body: '{aap_id}' },
-      ...(TELEPATH_AVAILABLE ? [
-        { method: 'GET', path: '/project/bot' },
-        { method: 'PUT', path: '/project/bot', body: '{token, webhook_url?}' },
-        { method: 'DELETE', path: '/project/bot' },
-        { method: 'POST', path: '/project/bot/sync', body: '{broadcast_html?}' },
-        { method: 'PUT', path: '/project/bot/webhook', body: '{url|null}' },
-        { method: 'PUT', path: '/project/bot/analytics', body: '{enabled}' },
-        { method: 'POST', path: '/project/bot/broadcast', body: '{html}' },
-      ] : []),
-    ] : [
-      { method: 'POST', path: '/upload', body: '{filename, content}' },
-      { method: 'POST', path: '/commit' },
-      { method: 'GET', path: '/files' },
-    ],
-    branching: project ? {
-      main: 'main',
-      aap_format: 'aap/<id>',
-      versioning: 'Every commit on main produces /<n>/v/<N>/. Immutable snapshots.',
     } : null,
     agent_playbook: playbook,
   };
 
-  const welcomeH1 = isSAP ? 'Server link' : project.name;
-  const subline = isSAP
-    ? 'Root access. Paste into Claude.'
-    : isPAP
-    ? `Your project. Live at ${PUBLIC_BASE}/${project.name}/. ${versions.length} versions.`
-    : `Contributor link to ${project.name}. Your changes go to your own branch.`;
+  const title = isSAP ? 'drafts  server' : isPAP ? 'drafts  ' + project.name : 'drafts  ' + project.name + '  contributor';
 
-  let tapSection = '';
-  if (isSAP) {
-    tapSection = renderTapSection(tpStatus, token);
-  }
+  let html = '<!doctype html><html lang="en"><head><meta charset="utf-8"/>';
+  html += '<meta name="viewport" content="width=device-width,initial-scale=1"/>';
+  html += '<title>' + esc(title) + '</title>';
+  html += '<meta name="robots" content="noindex,nofollow"/>';
+  html += '<link rel="preconnect" href="https://fonts.googleapis.com"/>';
+  html += '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>';
+  html += '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>';
+  html += bufferCSS();
+  html += '</head><body><div class="wrap">';
 
-  let html = '';
-  html += '<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>';
-  html += `<title>${title}</title><meta name="robots" content="noindex,nofollow"/>`;
-  html += '<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#000;color:#f5f5f5;font-family:Inter,system-ui,sans-serif;font-size:15px;line-height:1.6}';
-  html += 'a{color:#60a5fa}.wrap{max-width:720px;margin:0 auto;padding:64px 28px}';
-  html += 'h1{font-size:44px;font-weight:800;letter-spacing:-0.03em;margin-bottom:14px}';
-  html += '.lead{font-size:17px;color:#a8a8a8;margin-bottom:28px}.badge{display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;border:1px solid rgba(255,255,255,0.07);color:#a8a8a8;margin-bottom:14px}';
-  html += '.btn{display:inline-block;padding:11px 20px;border-radius:10px;background:#ea5a2e;color:#fff;text-decoration:none;font-weight:600;margin-right:10px;margin-top:14px}';
-  html += '.meta{margin-top:28px;font-size:12px;color:#6a6a6a}.meta a{color:#a8a8a8}';
-  html += '</style></head><body><div class="wrap">';
-  html += `<span class="badge">${roleBadge}</span><h1>${welcomeH1}</h1><p class="lead">${subline}</p>`;
-  html += buildRichContext({ tier, token, project, projectsDir: DRAFTS_DIR, publicBase: PUBLIC_BASE });
-  html += tapSection;
-  html += `<a class="btn" href="${CHROME_EXT_URL}" target="_blank">Install Claude for Chrome ↗</a>`;
-  html += `<button class="btn" id="copyUrlBtn" type="button" data-portable="${portableId}" style="background:rgba(96,165,250,0.15);border:none;color:#93c5fd;cursor:pointer;font-family:inherit;font-size:14px">Copy link</button>`;
-  if (project) {
-    html += '<div class="meta">';
-    html += `<a href="${liveUrl}" target="_blank">live ↗</a>`;
-    if (latestVersionUrl) html += ` · <a href="${latestVersionUrl}" target="_blank">v${latestVersion} ↗</a>`;
-    html += '</div>';
-  }
-  html += '<script>(function(){var b=document.getElementById("copyUrlBtn");if(!b)return;b.addEventListener("click",function(){navigator.clipboard.writeText(b.dataset.portable);b.textContent="Copied ✓";setTimeout(function(){b.textContent="Copy link"},1500);});})();</script>';
-  html += '<script type="application/json" id="claude-instructions">' + JSON.stringify(machine, null, 2) + '</' + 'script>';
+  // Hero
+  html += '<div class="eyebrow"><span class="dot"></span><span>' + esc(hero.eyebrowText) + '</span></div>';
+  html += '<h1>' + hero.h1 + '</h1>';
+  html += '<p class="lead">' + hero.lead + '</p>';
 
-  // v0.9 UI: Telepath button (top-right), Autopilot module (PAP), Auto-update (SAP)
-  html += '<style>';
-  html += '.v9-topbar{position:fixed;top:18px;right:22px;display:flex;gap:8px;z-index:50}';
-  html += '.v9-btn{background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text-2);padding:8px 14px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:0.02em}';
-  html += '.v9-btn:hover{background:rgba(255,255,255,0.10);color:var(--text)}';
-  html += '.v9-btn.tg{background:linear-gradient(135deg,#229ED9,#1a7ba8);color:#fff;border-color:transparent}';
-  html += '.v9-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;align-items:flex-start;justify-content:center;padding:60px 20px;overflow-y:auto}';
-  html += '.v9-modal.open{display:flex}';
-  html += '.v9-card{background:#0c0c0c;border:1px solid var(--border);border-radius:16px;padding:32px;max-width:560px;width:100%;color:var(--text)}';
-  html += '.v9-card h2{font-size:24px;font-weight:800;letter-spacing:-0.02em;margin-bottom:8px}';
-  html += '.v9-card .sub{color:var(--text-2);font-size:14px;margin-bottom:20px}';
-  html += '.v9-card .field{margin:14px 0}';
-  html += '.v9-card label{display:block;font-size:12px;color:var(--text-3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}';
-  html += '.v9-card input[type=text],.v9-card input[type=password],.v9-card textarea{width:100%;background:#000;border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-family:inherit;font-size:13.5px;box-sizing:border-box}';
-  html += '.v9-card .row{display:flex;gap:10px;align-items:center;margin:10px 0}';
-  html += '.v9-card .check{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;margin:8px 0;cursor:pointer}';
-  html += '.v9-card .check:hover{background:rgba(255,255,255,0.05)}';
-  html += '.v9-card .check input{margin-top:3px}';
-  html += '.v9-card .check .ttl{font-weight:600;font-size:14px;margin-bottom:3px}';
-  html += '.v9-card .check .ds{font-size:12.5px;color:var(--text-2);line-height:1.5}';
-  html += '.v9-card .actions{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}';
-  html += '.v9-prim{background:linear-gradient(135deg,#ea5a2e,#d44a2a);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13.5px}';
-  html += '.v9-sec{background:transparent;color:var(--text-2);border:1px solid var(--border);padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13.5px}';
-  html += '.v9-status{font-size:12px;color:var(--text-3);margin-top:8px;font-family:var(--mono,monospace)}';
-  html += '.v9-status.ok{color:#4ade80}.v9-status.err{color:#f87171}';
-  html += '.v9-section{background:#0c0c0c;border:1px solid var(--border);border-radius:14px;padding:20px;margin:20px 0}';
-  html += '.v9-section h3{font-size:15px;font-weight:700;letter-spacing:-0.01em;margin-bottom:6px;display:flex;align-items:center;gap:8px}';
-  html += '.v9-section .badge2{background:rgba(74,222,128,0.15);color:#4ade80;font-size:10px;padding:2px 8px;border-radius:4px;letter-spacing:0.06em;text-transform:uppercase;font-weight:600}';
-  html += '.v9-section p{font-size:13px;color:var(--text-2);line-height:1.55;margin-bottom:14px}';
-  html += '</style>';
-
-  // Top bar with Telepath + (SAP) Auto-update buttons
-  html += '<div class="v9-topbar">';
-  if (isSAP) {
-    html += '<button class="v9-btn" onclick="document.getElementById(\'v9-update\').classList.add(\'open\')"> Auto-update</button>';
-  }
-  html += '<button class="v9-btn tg" onclick="document.getElementById(\'v9-telepath\').classList.add(\'open\')"> Telepath</button>';
+  // Numbered steps
+  html += '<div class="divider"></div>';
+  html += '<div class="section">';
+  html += '<h2>' + (isSAP ? 'How to use this server link' : isPAP ? 'How to ship from this link' : 'How to contribute') + '</h2>';
+  html += renderSteps(steps);
   html += '</div>';
 
-  // Telepath modal (visible on SAP and PAP)
-  if (isSAP || isPAP) {
-    const tg = (typeof telepathState !== 'undefined' && telepathState) ? telepathState : null;
-    const installed = tg && tg.installed;
-    html += '<div class="v9-modal" id="v9-telepath">';
-    html += '<div class="v9-card">';
-    html += '<h2> Telepath</h2>';
-    html += '<p class="sub">One Telegram bot, all your projects. Push changes from anywhere  phone, desktop, voice. Telepath connects your drafts server to a Telegram bot, giving you mobile-first control over every project on this server. Each PAP gets its own per-project bot persona; SAP owner gets the master bot.</p>';
-    if (installed) {
-      html += '<div class="v9-section"><h3>Connected <span class="badge2">active</span></h3>';
-      html += '<p>Bot: <b>@' + (tg.bot && tg.bot.username || '?') + '</b> &nbsp; Polling: <b>' + (tg.polling?'on':'off') + '</b></p>';
-      html += '<p>Open the bot in Telegram and send <code>/start</code>. Use <code>/projects</code> to see everything on this server, <code>/sites</code> for project-bots management (similar to BotFather sites menu).</p>';
-      html += '<a href="https://t.me/' + (tg.bot && tg.bot.username || '') + '" target="_blank" class="v9-prim" style="text-decoration:none;display:inline-block">Open in Telegram </a>';
-      if (isSAP) html += ' <button class="v9-sec" id="v9-tap-revoke">Revoke</button>';
-      html += '</div>';
-    } else {
-      html += '<div class="v9-section"><h3>Set up Telegram bot</h3>';
-      html += '<p>1. Open <a href="https://t.me/BotFather" target="_blank">@BotFather</a> in Telegram, send <code>/newbot</code>, follow prompts. 2. Copy the bot token (looks like <code>1234567890:ABC</code>). 3. Paste below.</p>';
-      html += '<div class="field"><label>Telegram bot token</label><input type="password" id="v9-tap-token" placeholder="1234567890:AAB..."/></div>';
-      html += '<div class="actions"><button class="v9-sec" onclick="document.getElementById(\'v9-telepath\').classList.remove(\'open\')">Cancel</button><button class="v9-prim" id="v9-tap-install">Install Telepath</button></div>';
-      html += '<div class="v9-status" id="v9-tap-status"></div>';
-      html += '</div>';
-    }
-    html += '<div class="actions"><button class="v9-sec" onclick="document.getElementById(\'v9-telepath\').classList.remove(\'open\')">Close</button></div>';
-    html += '</div></div>';
+  // What you can build/do (pills)
+  html += '<div class="section">';
+  html += '<h2>' + (isSAP ? 'What you can do here' : isPAP ? 'What you can build here' : 'What you can do in your branch') + '</h2>';
+  html += renderPills(pills);
+  html += '</div>';
+
+  // Stats
+  if (isPAP) {
+    html += '<div class="section">';
+    html += '<h2>Project state</h2>';
+    html += statsBlock(project, versions);
+    html += versionsTable(project, versions, PUBLIC_BASE);
+    html += '</div>';
+  } else if (isSAP) {
+    html += '<div class="section">';
+    html += '<h2>Server state</h2>';
+    const projsForTable = state.projects.map(p => ({ name: p.name, bot: p.bot, github_autosync: p.github_autosync, versions_count: 0 }));
+    html += serverStatsBlock({ projects: state.projects });
+    html += projectsTable({ projects: state.projects }, PUBLIC_BASE);
+    html += '</div>';
+  } else if (isAAP) {
+    html += '<div class="section">';
+    html += '<h2>Where you stand</h2>';
+    html += '<div class="stats"><div class="stat"><div class="label">Branch</div><div class="value" style="font-size:18px;font-family:ui-monospace,Menlo,monospace">' + esc(aap.branch) + '</div></div><div class="stat"><div class="label">Live versions</div><div class="value">' + versions.length + '</div></div><div class="stat"><div class="label">Status</div><div class="value" style="font-size:18px">draft</div></div></div>';
+    html += '<p>Live URL is read-only for you: <a href="' + PUBLIC_BASE + '/' + project.name + '/" target="_blank">' + PUBLIC_BASE.replace(/^https?:\/\//,'') + '/' + project.name + '/</a></p>';
+    html += '</div>';
   }
 
-  // Auto-update modal (SAP only)
-  if (isSAP) {
-    html += '<div class="v9-modal" id="v9-update">';
-    html += '<div class="v9-card">';
-    html += '<h2> Auto-update software</h2>';
-    html += '<p class="sub">Pull latest drafts and Telepath code from GitHub on a schedule. Server stays current automatically.</p>';
-    html += '<label class="check"><input type="checkbox" id="v9-up-drafts"/><div><div class="ttl">Auto-update drafts to latest version</div><div class="ds">Pulls from <code>github.com/g0rd33v/drafts-protocol</code> daily. Restarts pm2 process after a successful pull. Skips if working tree is dirty.</div></div></label>';
-    html += '<label class="check"><input type="checkbox" id="v9-up-telepath"/><div><div class="ttl">Auto-update Telepath to latest version</div><div class="ds">Updates the Telepath module embedded in drafts. Requires Telepath to be installed (TAP set). Same daily cadence.</div></div></label>';
-    html += '<div class="actions"><button class="v9-sec" onclick="document.getElementById(\'v9-update\').classList.remove(\'open\')">Cancel</button><button class="v9-prim" id="v9-up-save">Save</button></div>';
-    html += '<div class="v9-status" id="v9-up-status"></div>';
-    html += '</div></div>';
+  // Telepath section (PAP and SAP get the rich version; AAP doesn't)
+  if (isPAP) {
+    html += telepathSectionPAP(project, apiBase, PUBLIC_BASE);
+  } else if (isSAP) {
+    html += telepathSectionSAP(tpStatus, apiBase);
   }
 
-  // v0.9.2: Agent quickstart playbook (visible on PAP/AAP/SAP)
-  html += renderAgentPlaybookHTML(playbook, tier);
-
-  // Human Upload section (PAP/AAP - file picker for manual uploads)
+  // Human upload (PAP and AAP)
   if (isPAP || isAAP) {
-    html += '<div class="v9-section"><h3>Upload files <span class="badge2">human upload</span></h3>';
-    html += '<p>Pick any file from your computer and upload it to the project root. Drag-drop or click to choose. After upload, files land in drafts; click Promote to publish.</p>';
-    html += '<input type="file" id="v91-files" multiple style="display:block;width:100%;padding:14px;background:#000;border:1px dashed var(--border);border-radius:10px;color:var(--text-2);font-family:inherit;font-size:13px;cursor:pointer;margin:10px 0"/>';
-    html += '<div class="row"><label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-2);text-transform:none;letter-spacing:0"><input type="checkbox" id="v91-commit" checked/> Commit after upload</label>';
-    if (isPAP) html += '<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-2);text-transform:none;letter-spacing:0;margin-left:20px"><input type="checkbox" id="v91-promote"/> Promote to live</label>';
-    html += '</div>';
-    html += '<div class="actions"><button class="v9-prim" id="v91-up">Upload</button></div>';
-    html += '<div class="v9-status" id="v91-status"></div>';
+    html += '<div class="divider"></div>';
+    html += '<div class="section"><h2>Upload files from your computer</h2>';
+    html += '<p>Pick any files  HTML, images, PDFs, audio, code. They land in <code>drafts</code>. ' + (isPAP ? 'Tick Promote to publish to live in one shot.' : 'Files commit to your branch automatically; the owner reviews + merges.') + '</p>';
+    html += '<input type="file" id="v95-files" multiple class="upload-area"/>';
+    html += '<label class="toggle"><input type="checkbox" id="v95-commit" checked/> Commit after upload</label>';
+    if (isPAP) html += '<label class="toggle"><input type="checkbox" id="v95-promote"/> Promote to live</label>';
+    html += '<div class="cta-row"><button class="btn primary" id="v95-up">Upload</button></div>';
+    html += '<div class="status-line" id="v95-status"></div>';
     html += '</div>';
   }
 
-  // Autopilot section (PAP/AAP  inline on the page, not a modal)
+  // Autopilot (PAP and AAP)
   if (isPAP || isAAP) {
-    html += '<div class="v9-section"><h3> Autopilot <span class="badge2">create-test-fix</span></h3>';
-    html += '<p>Describe what you want and Autopilot ships it on a loop: it generates a draft, your Claude for Chrome agent tests it in a real browser, fixes whatever broke, and repeats until the build is green. No babysitting.</p>';
-    html += '<div class="field"><label>Goal</label><textarea id="v9-ap-goal" rows="3" placeholder="e.g. landing page for a vintage typewriter shop in Brooklyn  hero, gallery, contact form, mobile-first"></textarea></div>';
-    html += '<div class="row"><label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-2);text-transform:none;letter-spacing:0"><input type="checkbox" id="v9-ap-loop" checked/> Run as loop until tests pass</label></div>';
-    html += '<div class="actions"><button class="v9-prim" id="v9-ap-start">Start autopilot</button></div>';
-    html += '<div class="v9-status" id="v9-ap-status"></div>';
+    html += '<div class="section"><h2>Autopilot</h2>';
+    html += '<p>Describe what you want. Autopilot drafts it, your Claude for Chrome agent tests in a real browser, fixes whatever broke, repeats until green. No babysitting.</p>';
+    html += '<textarea id="v95-ap-goal" placeholder="e.g. landing page for a vintage typewriter shop  hero, gallery, contact form, mobile-first"></textarea>';
+    html += '<label class="toggle"><input type="checkbox" id="v95-ap-loop" checked/> Run as loop until tests pass</label>';
+    html += '<div class="cta-row"><button class="btn primary" id="v95-ap-start">Start autopilot</button></div>';
+    html += '<div class="status-line" id="v95-ap-status"></div>';
     html += '</div>';
   }
 
-  // Wire up scripts for v0.9 UI
+  // CTA + portable link
+  html += '<div class="divider"></div>';
+  html += '<div class="section"><h2>Open this link in Claude</h2>';
+  html += '<p>Two ways to put this page in front of Claude:</p>';
+  html += '<div class="steps-num"><div class="row"><div class="num">A</div><div><div class="ttl">Claude for Chrome <span class="pill-state open" style="margin-left:6px">recommended</span></div><div class="body">Install the <a href="' + CHROME_EXT_URL + '" target="_blank">extension</a>, open this URL in the side panel. Claude reads everything below  prose, JSON, state  and starts acting as the ' + tier.toUpperCase() + ' agent.</div></div></div>';
+  html += '<div class="row"><div class="num">B</div><div><div class="ttl">Any Claude chat</div><div class="body">Paste the URL into claude.ai web, Desktop, or any client. Same context picked up.</div></div></div></div>';
+  html += '<div class="cta-row"><a class="btn primary" href="' + CHROME_EXT_URL + '" target="_blank">Install Chrome extension ' + I.arrowUpRight + '</a><button class="btn" id="v95-copy" type="button" data-portable="' + esc(portableId) + '">Copy this link</button></div>';
+  html += '</div>';
+
+  // Developers (collapsed)
+  html += '<details><summary>For developers  endpoints, auth, rate limits</summary><div class="body">';
+  html += '<p>Authenticate every API call with <code>Authorization: Bearer ' + (isSAP ? '&lt;sap&gt;' : isPAP ? '&lt;pap&gt;' : '&lt;aap&gt;') + '</code>. Rate limits: ' + (isSAP ? '120/min, 2000/hr, 20000/day' : isPAP ? '60/min, 600/hr, 5000/day' : '10/min, 60/hr, 300/day') + '. All endpoints under <code>' + apiBase + '/</code>. URL scheme: <code>/&lt;project&gt;/</code> = live, <code>/&lt;project&gt;/v/&lt;N&gt;/</code> = immutable snapshot. Spec: <a href="https://github.com/g0rd33v/drafts-protocol" target="_blank">github.com/g0rd33v/drafts-protocol</a>.</p>';
+  html += '<p>The full machine-readable instruction set for AI agents is below in <code>&lt;script id="claude-instructions"&gt;</code>.</p>';
+  html += '</div></details>';
+
+  html += footerBlock(tier, project, PUBLIC_BASE);
+
+  // machine JSON
+  html += '<script type="application/json" id="claude-instructions">' + JSON.stringify(machine, null, 2) + '</' + 'script>';
+
+  // Client JS
   html += '<script>(function(){';
-  html += 'var T=' + JSON.stringify(token) + ';';
-  html += 'var API=' + JSON.stringify(apiBase) + ';';
-  html += 'function st(id,m,k){var e=document.getElementById(id);if(!e)return;e.textContent=m||"";e.className="v9-status"+(k?" "+k:"")}';
-  html += 'var ti=document.getElementById("v9-tap-install");if(ti)ti.addEventListener("click",function(){var tk=document.getElementById("v9-tap-token").value.trim();if(!tk){st("v9-tap-status","token required","err");return}st("v9-tap-status","installing...");fetch(API+"/tap",{method:"PUT",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({token:tk})}).then(function(r){return r.json()}).then(function(d){if(d.ok){st("v9-tap-status","installed: @"+(d.bot&&d.bot.username),"ok");setTimeout(function(){location.reload()},900)}else st("v9-tap-status","error: "+d.error,"err")}).catch(function(e){st("v9-tap-status","error: "+e.message,"err")})});';
-  html += 'var tr=document.getElementById("v9-tap-revoke");if(tr)tr.addEventListener("click",function(){if(!confirm("Revoke Telepath?"))return;fetch(API+"/tap",{method:"DELETE",headers:{"Authorization":"Bearer "+T}}).then(function(){location.reload()})});';
-  html += 'var us=document.getElementById("v9-up-save");if(us){fetch(API+"/autoupdate",{headers:{"Authorization":"Bearer "+T}}).then(function(r){return r.json()}).then(function(d){if(d.ok){var a=document.getElementById("v9-up-drafts");if(a)a.checked=!!d.drafts;var b=document.getElementById("v9-up-telepath");if(b)b.checked=!!d.telepath}});us.addEventListener("click",function(){var d=document.getElementById("v9-up-drafts").checked;var tp=document.getElementById("v9-up-telepath").checked;st("v9-up-status","saving...");fetch(API+"/autoupdate",{method:"PUT",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({drafts:d,telepath:tp})}).then(function(r){return r.json()}).then(function(x){st("v9-up-status",x.ok?"saved":"err: "+x.error,x.ok?"ok":"err")})})}';
-  html += 'var ap=document.getElementById("v9-ap-start");if(ap)ap.addEventListener("click",function(){var g=document.getElementById("v9-ap-goal").value.trim();if(!g){st("v9-ap-status","goal required","err");return}st("v9-ap-status","queued. Open this page in Claude for Chrome  agent will pick up the autopilot job and run create-test-fix loop.");fetch(API+"/autopilot",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({goal:g,loop:document.getElementById("v9-ap-loop").checked})}).then(function(r){return r.json()}).then(function(d){if(d.ok)st("v9-ap-status","job "+d.job_id+" queued  autopilot loop active","ok");else st("v9-ap-status","err: "+d.error,"err")})});';
-  html += 'var up=document.getElementById("v91-up");if(up)up.addEventListener("click",async function(){var fi=document.getElementById("v91-files");var files=fi.files;if(!files||!files.length){st("v91-status","pick at least one file","err");return}var doCommit=document.getElementById("v91-commit").checked;var pEl=document.getElementById("v91-promote");var doPromote=pEl&&pEl.checked;st("v91-status","uploading 0/"+files.length+"...");for(var i=0;i<files.length;i++){var f=files[i];try{var b64=await new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(r.result.split(",")[1])};r.onerror=function(){rej(r.error)};r.readAsDataURL(f)});var rsp=await fetch(API+"/upload",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({filename:f.name,content_b64:b64})});var jd=await rsp.json();if(!jd.ok){st("v91-status","failed on "+f.name+": "+jd.error,"err");return}st("v91-status","uploaded "+(i+1)+"/"+files.length+": "+f.name)}catch(e){st("v91-status","error: "+e.message,"err");return}}if(doCommit){st("v91-status","committing...");var cr=await fetch(API+"/commit",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({message:"human upload: "+files.length+" file(s)"})}).then(function(r){return r.json()});if(!cr.ok){st("v91-status","commit failed: "+cr.error,"err");return}}if(doPromote){st("v91-status","promoting...");var pr=await fetch(API+"/promote",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({})}).then(function(r){return r.json()});if(!pr.ok){st("v91-status","promote failed: "+pr.error,"err");return}st("v91-status","uploaded + committed + promoted to live ✓","ok")}else if(doCommit){st("v91-status","uploaded + committed ✓","ok")}else{st("v91-status","uploaded ✓ (not committed)","ok")}fi.value=""});';
+  html += 'var T=' + JSON.stringify(token) + ',API=' + JSON.stringify(apiBase) + ',SAP=' + JSON.stringify(isSAP ? token : '') + ';';
+  html += 'function st(id,m,k){var e=document.getElementById(id);if(!e)return;e.textContent=m||"";e.className="status-line"+(k?" "+k:"")}';
+  html += 'var cb=document.getElementById("v95-copy");if(cb)cb.addEventListener("click",function(){navigator.clipboard.writeText(cb.dataset.portable);cb.textContent="Copied ";setTimeout(function(){cb.textContent="Copy this link"},1500)});';
+  // Bot attach (PAP)
+  html += 'var ba=document.getElementById("bot-attach-btn");if(ba)ba.addEventListener("click",function(){var tk=document.getElementById("bot-token-input").value.trim();if(!tk){st("bot-attach-status","token required","err");return}st("bot-attach-status","attaching...");fetch(API+"/project/bot",{method:"PUT",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({token:tk})}).then(function(r){return r.json()}).then(function(d){if(d.ok){st("bot-attach-status","attached: @"+(d.bot&&d.bot.bot_username),"ok");setTimeout(function(){location.reload()},900)}else st("bot-attach-status","error: "+(d.detail||d.error),"err")})});';
+  // TAP install (SAP)
+  html += 'var ti=document.getElementById("tap-install-btn");if(ti)ti.addEventListener("click",function(){var tk=document.getElementById("tap-token-input").value.trim();if(!/^\\d+:[A-Za-z0-9_-]{30,}$/.test(tk)){st("tap-status","invalid token format","err");return}st("tap-status","verifying...");fetch(API+"/tap",{method:"PUT",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({token:tk})}).then(function(r){return r.json()}).then(function(j){if(j.ok){st("tap-status","connected as @"+j.bot.username,"ok");setTimeout(function(){location.reload()},1200)}else st("tap-status","failed: "+(j.detail||j.error),"err")})});';
+  html += 'var tr=document.getElementById("tap-revoke-btn");if(tr)tr.addEventListener("click",function(){if(!confirm("Revoke master bot?"))return;fetch(API+"/tap",{method:"DELETE",headers:{"Authorization":"Bearer "+T}}).then(function(){location.reload()})});';
+  // Upload
+  html += 'var up=document.getElementById("v95-up");if(up)up.addEventListener("click",async function(){var fi=document.getElementById("v95-files");var files=fi.files;if(!files||!files.length){st("v95-status","pick at least one file","err");return}var doCommit=document.getElementById("v95-commit").checked;var pEl=document.getElementById("v95-promote");var doPromote=pEl&&pEl.checked;st("v95-status","uploading 0/"+files.length+"...");for(var i=0;i<files.length;i++){var f=files[i];try{var b64=await new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(r.result.split(",")[1])};r.onerror=function(){rej(r.error)};r.readAsDataURL(f)});var rsp=await fetch(API+"/upload",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({filename:f.name,content_b64:b64})});var jd=await rsp.json();if(!jd.ok){st("v95-status","failed on "+f.name+": "+jd.error,"err");return}st("v95-status","uploaded "+(i+1)+"/"+files.length+": "+f.name)}catch(e){st("v95-status","error: "+e.message,"err");return}}if(doCommit){var cr=await fetch(API+"/commit",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({message:"upload: "+files.length+" file(s)"})}).then(function(r){return r.json()});if(!cr.ok){st("v95-status","commit failed: "+cr.error,"err");return}}if(doPromote){var pr=await fetch(API+"/promote",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({})}).then(function(r){return r.json()});if(!pr.ok){st("v95-status","promote failed: "+pr.error,"err");return}st("v95-status","uploaded + committed + promoted ","ok")}else if(doCommit){st("v95-status","uploaded + committed ","ok")}else{st("v95-status","uploaded ","ok")}fi.value=""});';
+  // Autopilot
+  html += 'var ap=document.getElementById("v95-ap-start");if(ap)ap.addEventListener("click",function(){var g=document.getElementById("v95-ap-goal").value.trim();if(!g){st("v95-ap-status","goal required","err");return}fetch(API+"/autopilot",{method:"POST",headers:{"Authorization":"Bearer "+T,"Content-Type":"application/json"},body:JSON.stringify({goal:g,loop:document.getElementById("v95-ap-loop").checked})}).then(function(r){return r.json()}).then(function(d){if(d.ok)st("v95-ap-status","job "+d.job_id+" queued. Open in Claude for Chrome to run.","ok");else st("v95-ap-status","err: "+d.error,"err")})});';
   html += '})();</script>';
 
   html += '</div></body></html>';
   return html;
 }
 
-function renderTapSection(tpStatus, sapToken) {
-  let inner;
-  if (tpStatus.installed && tpStatus.bot) {
-    inner = `
-      <div style="font-size:13px;color:#a8a8a8;margin-bottom:8px">Connected as <strong style="color:#f5f5f5">@${tpStatus.bot.username}</strong> · polling: ${tpStatus.polling ? '<span style="color:#4ade80">on</span>' : '<span style="color:#ea5a2e">off</span>'}</div>
-      <div style="font-size:12px;color:#6a6a6a;margin-bottom:14px">Open the bot in Telegram → send your SAP/PAP/AAP token → get a dashboard.</div>
-      <button id="tapDisconnect" type="button" style="padding:8px 14px;border-radius:8px;background:transparent;border:1px solid rgba(234,90,46,0.4);color:#ea5a2e;font-weight:600;font-size:12px;cursor:pointer">Disconnect bot</button>
-    `;
-  } else {
-    inner = `
-      <div style="font-size:13px;color:#a8a8a8;margin-bottom:14px">Drafts Telepath isn't connected to a bot yet. Create a bot via <a href="https://t.me/BotFather" target="_blank" style="color:#60a5fa">@BotFather</a> on Telegram, then paste its API token below to bring this server's data into your DM.</div>
-      <input id="tapTokenInput" type="password" placeholder="123456789:AA..." style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:#000;color:#f5f5f5;font-family:ui-monospace,Menlo,monospace;font-size:13px;box-sizing:border-box;margin-bottom:10px"/>
-      <button id="tapInstall" type="button" style="padding:10px 18px;border-radius:8px;background:#ea5a2e;border:none;color:#fff;font-weight:600;font-size:13px;cursor:pointer">Connect bot</button>
-      <div id="tapStatus" style="margin-top:10px;font-size:12px;color:#6a6a6a"></div>
-    `;
-  }
-  return `
-    <div style="background:#0c0c0c;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:20px 22px;margin:28px 0;">
-      <h3 style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#6a6a6a;margin:0 0 14px 0;">
-        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${tpStatus.installed ? '#4ade80' : '#6a6a6a'};margin-right:8px;vertical-align:middle"></span>
-        Telepath · Telegram bot
-      </h3>
-      ${inner}
-    </div>
-    <script>
-    (function(){
-      var sap = ${JSON.stringify(sapToken)};
-      var hdr = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sap };
-      var btnI = document.getElementById('tapInstall');
-      if (btnI) {
-        btnI.addEventListener('click', function() {
-          var tok = (document.getElementById('tapTokenInput').value || '').trim();
-          var status = document.getElementById('tapStatus');
-          if (!/^\\d+:[A-Za-z0-9_-]{30,}$/.test(tok)) { status.textContent = 'Invalid token format. It should look like 1234567:AA...'; status.style.color='#ea5a2e'; return; }
-          status.textContent = 'Verifying with Telegram...'; status.style.color='#a8a8a8';
-          fetch('/drafts/tap', { method:'PUT', headers: hdr, body: JSON.stringify({ token: tok }) })
-            .then(function(r){ return r.json(); })
-            .then(function(j){
-              if (j.ok) { status.textContent = 'Connected as @' + j.bot.username + '. Reload to see status.'; status.style.color='#4ade80'; setTimeout(function(){ location.reload(); }, 1500); }
-              else { status.textContent = 'Failed: ' + (j.detail || j.error); status.style.color='#ea5a2e'; }
-            })
-            .catch(function(e){ status.textContent = 'Network error: ' + e.message; status.style.color='#ea5a2e'; });
-        });
-      }
-      var btnD = document.getElementById('tapDisconnect');
-      if (btnD) {
-        btnD.addEventListener('click', function() {
-          if (!confirm('Disconnect bot? Users will lose access until you reconnect.')) return;
-          fetch('/drafts/tap', { method:'DELETE', headers: hdr })
-            .then(function(){ location.reload(); });
-        });
-      }
-    })();
-    </script>
-  `;
-}
 
 async function welcomeRoute(req, res) {
   let token = req.params.token || "";
