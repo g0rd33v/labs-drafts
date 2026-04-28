@@ -1390,9 +1390,9 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
     h += '<div class="card"><h3>your project</h3>';
     h += '<div class="actions">';
     h += '<a class="btn" href="'+p.live_url+'" target="_blank">🌐 live</a>';
-    h += '<button class="btn ghost" id="copyPass">🔗 pass-link</button>';
+    if (!__sapNavStack) h += '<button class="btn ghost" id="copyPass">🔗 pass-link</button>';
     h += '</div>';
-    h += '<div class="muted" style="margin-top:10px">pass-link is what you share with Claude to build. tap to copy.</div>';
+    if (!__sapNavStack) h += '<div class="muted" style="margin-top:10px">pass-link is what you share with Claude to build. tap to copy.</div>';
     h += '</div>';
 
     // Bot card
@@ -1517,7 +1517,7 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
       const backBtn = document.getElementById('backToSapBtn');
       if (backBtn) backBtn.addEventListener('click', () => { __sapNavStack = false; load(); });
     }
-    document.getElementById('copyPass').addEventListener('click', () => copy(p.pass_url));
+    { const cp = document.getElementById('copyPass'); if (cp) cp.addEventListener('click', () => copy(p.pass_url)); }
     document.getElementById('newAap').addEventListener('click', async () => {
       const name = document.getElementById('aapName').value.trim();
       try {
