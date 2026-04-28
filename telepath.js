@@ -623,15 +623,51 @@ async function handleCallback(cq) {
     return;
   }
 
+  if (data.startsWith('projects:page:')) {
+    const page = parseInt(data.slice('projects:page:'.length), 10) || 0;
+    const v = renderProjectsView(user, page);
+    try {
+      await tgApi('editMessageText', {
+        chat_id: chatId, message_id: cq.message.message_id,
+        text: v.text, parse_mode: 'HTML',
+        reply_markup: v.kb.length ? { inline_keyboard: v.kb } : undefined,
+      });
+    } catch (e) {}
+    await tgApi('answerCallbackQuery', { callback_query_id: cq.id });
+    return;
+  }
+  if (data === 'projects:noop') {
+    await tgApi('answerCallbackQuery', { callback_query_id: cq.id });
+    return;
+  }
   await tgApi('answerCallbackQuery', { callback_query_id: cq.id });
 }
 
 async function sendStart(chatId, user) { await tgSend(chatId, welcomeText(user)); }
 async function sendHelp(chatId) { await tgSend(chatId, helpText()); }
-async function sendProjects(chatId, user) {
-  const text = projectsListText(user);
-  const kb = (user?.bindings || []).slice(0, 8).flatMap(b => dashboardKeyboardForBinding(b));
-  await tgSend(chatId, text, { reply_markup: kb.length ? { inline_keyboard: kb } : undefined });
+const PROJECTS_PAGE_SIZE = 8;
+function renderProjectsView(user, page) {
+  const bindings = (user && user.bindings) || [];
+  const total = bindings.length;
+  const totalPages = Math.max(1, Math.ceil(total / PROJECTS_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(page || 0, totalPages - 1));
+  const start = safePage * PROJECTS_PAGE_SIZE;
+  const slice = bindings.slice(start, start + PROJECTS_PAGE_SIZE);
+  let text = projectsListText(user);
+  if (totalPages > 1) text += '\n<i>page ' + (safePage + 1) + '/' + totalPages + ' · ' + total + ' total</i>';
+  const kb = slice.flatMap(b => dashboardKeyboardForBinding(b));
+  if (totalPages > 1) {
+    const nav = [];
+    if (safePage > 0) nav.push({ text: '‹ prev', callback_data: 'projects:page:' + (safePage - 1) });
+    nav.push({ text: (safePage + 1) + '/' + totalPages, callback_data: 'projects:noop' });
+    if (safePage < totalPages - 1) nav.push({ text: 'next ›', callback_data: 'projects:page:' + (safePage + 1) });
+    kb.push(nav);
+  }
+  return { text: text, kb: kb };
+}
+async function sendProjects(chatId, user, page) {
+  const v = renderProjectsView(user, page || 0);
+  await tgSend(chatId, v.text, { reply_markup: v.kb.length ? { inline_keyboard: v.kb } : undefined, parse_mode: 'HTML' });
 }
 async function sendForgetMenu(chatId, user) {
   if (!user || !user.bindings.length) {
