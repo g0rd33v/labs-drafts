@@ -923,6 +923,21 @@ function mountRoutes(app) {
         pass_url: PUBLIC_BASE + '/drafts/pass/drafts_agent_' + SERVER_NUMBER + '_' + token.replace(/^aap_/,''),
       });
     }
+    if (tier === 'sap-project') {
+      const u = getUser(req.tgUser.id);
+      if (!u || !u.bindings.some(b => b.tier === 'sap')) return res.status(403).json({ ok: false, error: 'no_sap_binding' });
+      const name = String(token || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+      if (!name) return res.status(400).json({ ok: false, error: 'invalid_name' });
+      const p = findProjectByName(name);
+      if (!p) return res.status(404).json({ ok: false, error: 'project_not_found' });
+      return res.json({ ok: true, tier: 'sap-project', public_base: PUBLIC_BASE, project: {
+        name: p.name, description: p.description, github_repo: p.github_repo,
+        github_autosync: !!p.github_autosync,
+        created_at: p.created_at, live_url: PUBLIC_BASE + '/' + p.name + '/',
+        aaps: (p.aaps || []).map(a => ({ id: a.id, name: a.name, revoked: a.revoked, branch: a.branch })),
+        bot: projectBotsApi.getBotStatus(p),
+      }});
+    }
     return res.status(400).json({ ok: false, error: 'bad_tier' });
   });
 
@@ -1254,6 +1269,7 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   if (tg) { tg.ready(); tg.expand(); }
   const initData = tg ? tg.initData : '';
+  let __sapNavStack = false;
   const root = document.getElementById('root');
   const TIER = ${JSON.stringify(tier)};
   const TOKEN = ${JSON.stringify(token || null)};
@@ -1337,11 +1353,24 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
         const modeLabel = p.bot_mode === 'webhook' ? '🔌' : '📢';
         botBadge = ' · '+modeLabel+' @'+esc(p.bot_username||'bot');
       }
-      h += '<div class="proj-item"><div class="proj-name">'+esc(p.name)+'</div>';
+      h += '<div class="proj-item" style="display:flex;align-items:center;gap:8px;">';
+      h += '<div style="flex:1;min-width:0;"><div class="proj-name">'+esc(p.name)+'</div>';
       h += '<div class="proj-meta">'+(p.description ? esc(p.description)+' · ' : '')+'agents: '+p.aap_count+botBadge+'</div></div>';
+      h += '<button class="btn ghost open-project-btn" data-name="'+esc(p.name)+'" style="flex:0 0 auto;">open →</button>';
+      h += '</div>';
     }
     h += '</div>';
     root.innerHTML = h;
+    document.querySelectorAll('.open-project-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const name = btn.getAttribute('data-name');
+        try {
+          __sapNavStack = true;
+          const d = await api('GET', '/telepath/api/state/sap-project/' + encodeURIComponent(name));
+          renderPAP(d);
+        } catch (e) { __sapNavStack = false; toast('failed: ' + e.message); }
+      });
+    });
     document.getElementById('createBtn').addEventListener('click', async () => {
       const name = document.getElementById('newName').value.trim();
       const description = document.getElementById('newDesc').value.trim();
@@ -1356,7 +1385,7 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 
   function renderPAP(d) {
     const p = d.project;
-    let h = '<h1>'+esc(p.name)+'</h1><div class="sub">live · versions · bot · analytics</div>';
+    let h = (__sapNavStack ? '<button class="btn ghost" id="backToSapBtn" style="margin-bottom:12px;">← back to projects</button>' : '') + '<h1>'+esc(p.name)+'</h1><div class="sub">live · versions · bot · analytics</div>';
 
     h += '<div class="card"><h3>your project</h3>';
     h += '<div class="actions">';
@@ -1484,6 +1513,10 @@ input:focus, textarea:focus { outline:none; border-color:var(--tg-theme-button-c
 
     root.innerHTML = h;
 
+    if (__sapNavStack) {
+      const backBtn = document.getElementById('backToSapBtn');
+      if (backBtn) backBtn.addEventListener('click', () => { __sapNavStack = false; load(); });
+    }
     document.getElementById('copyPass').addEventListener('click', () => copy(p.pass_url));
     document.getElementById('newAap').addEventListener('click', async () => {
       const name = document.getElementById('aapName').value.trim();
